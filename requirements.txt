@@ -1,2 +1,6 @@
 streamlit
+pymongo
 openai
+pillow
+requests
+pandas
