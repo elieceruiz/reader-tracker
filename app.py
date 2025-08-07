@@ -35,7 +35,7 @@ if uploaded_file:
     image_bytes = uploaded_file.read()
     base64_image = base64.b64encode(image_bytes).decode("utf-8")
     response = openai.chat.completions.create(
-        model="gpt-4-vision-preview",
+        model="gpt-4o",
         messages=[
             {"role": "user", "content": [
                 {"type": "text", "text": "¿Cuál es el título del libro en esta imagen?"},
