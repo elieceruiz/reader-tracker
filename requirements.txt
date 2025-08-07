@@ -1,7 +1,6 @@
 streamlit
-openai
 pymongo
-Pillow
-geocoder
-folium
-streamlit-folium
+openai
+pillow
+requests
+pandas
