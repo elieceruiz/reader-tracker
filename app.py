@@ -1,108 +1,109 @@
 import streamlit as st
+import openai
+import time
+from datetime import datetime
+from pymongo import MongoClient
 from PIL import Image
 import base64
 import io
-import openai
-from pymongo import MongoClient
-from datetime import datetime
+import geocoder
+import folium
+from streamlit_folium import st_folium
 
-# --- Configuración inicial ---
-st.set_page_config(page_title="📚 Seguimiento lector – con cui", layout="centered")
-st.title("📚 Seguimiento lector – con cui")
-
-# --- Claves (usa st.secrets o variables locales) ---
-openai.api_key = st.secrets["OPENAI_API_KEY"]
-mongo_uri = st.secrets["MONGO_URI"]
-client = MongoClient(mongo_uri)
+# 🧠 Autenticación OpenAI y Mongo
+openai.api_key = st.secrets["openai_api_key"]
+openai.organization = st.secrets["openai_org_id"]
+client = MongoClient(st.secrets["mongo_uri"])
 db = client["reader_tracker"]
 
-# --- Función para extraer texto desde imagen usando GPT-4o ---
-def extract_title_with_openai(image: Image.Image) -> str:
-    buffer = io.BytesIO()
-    image.save(buffer, format="JPEG")
-    img_bytes = buffer.getvalue()
-    base64_image = base64.b64encode(img_bytes).decode()
+# 🎨 Título de la App
+st.title("📚 Seguimiento lector – con cui")
 
-    response = openai.ChatCompletion.create(
-        model="gpt-4o",
-        messages=[
-            {"role": "system", "content": "Extrae el título del libro a partir de esta portada. Responde solo con el título."},
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": "¿Cuál es el título del libro en esta imagen?"},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
-                ]
-            }
-        ],
-        max_tokens=50,
-        temperature=0.2,
-    )
-    return response.choices[0].message.content.strip()
+# --- Paso 1: Cargar portada ---
+st.subheader("1. Sube portada del libro (opcional)")
+uploaded_file = st.file_uploader("Foto de portada", type=["png", "jpg", "jpeg"])
 
-# --- Sube portada del libro ---
-uploaded_file = st.file_uploader("### 1. Sube portada del libro (opcional)", type=["png", "jpg", "jpeg"])
 book_title = ""
-
 if uploaded_file:
     image = Image.open(uploaded_file)
+
+    # Mostrar imagen
     st.image(image, caption="Portada del libro", use_container_width=True)
 
-    with st.spinner("Leyendo título con OpenAI..."):
-        book_title = extract_title_with_openai(image)
-        st.success(f"📖 Título detectado: **{book_title}**")
+    # Leer imagen con OpenAI Vision
+    st.text("🧠 Leyendo texto en la portada...")
+    image_bytes = uploaded_file.read()
+    base64_image = base64.b64encode(image_bytes).decode("utf-8")
+    response = openai.chat.completions.create(
+        model="gpt-4-vision-preview",
+        messages=[
+            {"role": "user", "content": [
+                {"type": "text", "text": "¿Cuál es el título del libro en esta imagen?"},
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
+            ]}
+        ],
+        max_tokens=30
+    )
+    book_title = response.choices[0].message.content.strip()
+    st.success(f"📖 Título detectado: *{book_title}*")
 
-# --- Entrada manual si no hay portada ---
-if not book_title:
-    book_title = st.text_input("📘 Escribe el título del libro")
-
+# --- Paso 2: Verificar colección ---
 if book_title:
-    col = db[book_title.replace(" ", "_").lower()]
-    st.markdown("---")
+    collection_name = book_title.lower().replace(" ", "_")
+else:
+    collection_name = "libro_sin_titulo"
 
-    # --- Registro inicial ---
-    st.subheader("2. ¿En qué página comienzas hoy?")
-    start_page = st.number_input("Página de inicio", min_value=1, step=1)
-    start_btn = st.button("▶️ Comenzar lectura")
+collection = db[collection_name]
 
-    if start_btn:
-        start_time = datetime.utcnow()
-        col.insert_one({
-            "inicio": start_time,
-            "pagina_inicio": start_page,
-            "activo": True
-        })
-        st.success("🕒 Seguimiento iniciado.")
+# --- Paso 3: Página de inicio ---
+st.subheader("2. ¿En qué página comienzas hoy?")
+start_page = st.number_input("Página de inicio", min_value=1, step=1)
 
-    # --- Parar lectura ---
-    st.subheader("3. ¿Dónde terminaste y qué se te quedó?")
-    stop_page = st.number_input("Página de término", min_value=1, step=1)
-    notes = st.text_area("📝 ¿Qué se te quedó de esta lectura?")
-    stop_btn = st.button("⏹️ Terminar sesión")
+# --- Paso 4: Cronómetro ---
+st.subheader("3. Cronómetro de lectura")
+if "start_time" not in st.session_state:
+    st.session_state.start_time = None
 
-    if stop_btn:
-        doc = col.find_one({"activo": True}, sort=[("inicio", -1)])
-        if doc:
-            end_time = datetime.utcnow()
-            col.update_one(
-                {"_id": doc["_id"]},
-                {
-                    "$set": {
-                        "fin": end_time,
-                        "pagina_fin": stop_page,
-                        "notas": notes,
-                        "activo": False
-                    }
-                }
-            )
-            duration = end_time - doc["inicio"]
-            mins = duration.total_seconds() // 60
-            st.success(f"✅ Sesión registrada. Duración: {int(mins)} min.")
+start_btn = st.button("▶️ Iniciar lectura")
+stop_btn = st.button("⏹️ Terminar lectura")
 
-    # --- Historial (opcional) ---
-    with st.expander("📖 Ver historial"):
-        rows = list(col.find().sort("inicio", -1))
-        for r in rows:
-            st.write(f"{r['inicio'].strftime('%Y-%m-%d %H:%M')} - {r.get('pagina_inicio')} ➡️ {r.get('pagina_fin', '?')}")
-            if "notas" in r:
-                st.caption(r["notas"])
+if start_btn:
+    st.session_state.start_time = time.time()
+    st.success("⏱️ Cronómetro iniciado.")
+
+if stop_btn and st.session_state.start_time:
+    elapsed = int(time.time() - st.session_state.start_time)
+    minutes = elapsed // 60
+    seconds = elapsed % 60
+    st.success(f"⏹️ Tiempo registrado: {minutes} min {seconds} seg")
+
+    # --- Paso 5: Página final ---
+    end_page = st.number_input("¿En qué página terminaste?", min_value=start_page, step=1, key="end_page")
+    resumen = st.text_area("¿Qué se te quedó de esta lectura?", placeholder="Escribe aquí...")
+
+    # --- Paso 6: Georreferenciación ---
+    st.subheader("📍 Ubicación de lectura (aproximada)")
+    g = geocoder.ip("me")
+    coords = g.latlng or [0.0, 0.0]
+
+    st.map(data={"lat": [coords[0]], "lon": [coords[1]]}, zoom=10)
+
+    # Mapa interactivo
+    m = folium.Map(location=coords, zoom_start=12)
+    folium.Marker(coords, popup="Lectura").add_to(m)
+    st_folium(m, width=700, height=400)
+
+    # --- Guardar en MongoDB ---
+    doc = {
+        "titulo": book_title or "Sin título",
+        "inicio": start_page,
+        "final": end_page,
+        "resumen": resumen,
+        "duracion_min": minutes,
+        "duracion_seg": seconds,
+        "timestamp": datetime.utcnow(),
+        "ubicacion": {"lat": coords[0], "lon": coords[1]}
+    }
+    collection.insert_one(doc)
+    st.success("✅ Registro guardado con cui.")
+    st.session_state.start_time = None
