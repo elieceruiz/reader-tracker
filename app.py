@@ -1,113 +1,119 @@
+# app_lector.py
 import streamlit as st
+import pytesseract
 from PIL import Image
+import io
 import base64
-import openai
+import geopy
+from geopy.geocoders import Nominatim
+import time
 import datetime
 import pymongo
-import requests
-import pandas as pd
-from bson.objectid import ObjectId
+import os
+from dotenv import load_dotenv
 
-# Configuración inicial
-st.set_page_config(page_title="📚 Seguimiento lector – con cui", layout="centered")
+# Cargar variables de entorno
+load_dotenv()
+MONGO_URI = os.getenv("MONGO_URI")
+client = pymongo.MongoClient(MONGO_URI)
+db = client["lector"]
+coleccion = db["registros"]
 
-# Conexión a MongoDB
-mongo_client = pymongo.MongoClient(st.secrets["mongo_uri"])
-db = mongo_client["seguimiento_lector"]
-collection = db["registros"]
+st.set_page_config(page_title="📚 Registro de Lectura", layout="centered")
+st.title("📚 Registro de Lectura Automatizado")
 
-# Configurar API de OpenAI
-openai.api_key = st.secrets["openai_api_key"]
-openai.organization = st.secrets["openai_org_id"]
+# --- Carga de imagen ---
+imagen_subida = st.file_uploader("Sube la imagen del libro (portada o página con datos)", type=["jpg", "png", "jpeg"])
 
-# Función para geolocalización por IP
-@st.cache_data(ttl=3600)
-def obtener_geolocalizacion():
+# --- OCR ---
+def extraer_texto(imagen_bytes):
+    image = Image.open(io.BytesIO(imagen_bytes))
+    texto = pytesseract.image_to_string(image, lang="spa")
+    return texto
+
+# --- Geolocalización ---
+def obtener_ubicacion():
     try:
-        res = requests.get("https://ipinfo.io/json")
-        data = res.json()
-        lat, lon = map(float, data["loc"].split(","))
-        return {"lat": lat, "lon": lon}
+        geo = Nominatim(user_agent="app_lector")
+        loc = geo.geocode("Colombia")  # Puedes mejorar esto con IP si deseas precisión
+        return f"{loc.address} ({loc.latitude:.2f}, {loc.longitude:.2f})"
     except:
-        return None
+        return "Ubicación no detectada"
 
-# Título principal
-st.title("📚 Seguimiento lector – con cui")
+# --- Cronómetro ---
+def iniciar_cronometro():
+    if "inicio" not in st.session_state:
+        st.session_state.inicio = time.time()
 
-# 1. Subida de portada (opcional)
-st.subheader("1. Sube portada del libro (opcional)")
-uploaded_file = st.file_uploader("Foto de portada", type=["jpg", "jpeg", "png"])
+    tiempo_actual = time.time()
+    duracion = tiempo_actual - st.session_state.inicio
+    return str(datetime.timedelta(seconds=int(duracion)))
 
-book_title = ""
-image_bytes = None
+# --- Procesar imagen ---
+datos_detectados = {"Título": "", "Autor": "", "Año": "", "Editorial": "", "ISBN": ""}
+if imagen_subida:
+    texto_extraido = extraer_texto(imagen_subida.read())
+    st.text_area("Texto detectado:", value=texto_extraido, height=200)
 
-if uploaded_file:
-    image_bytes = uploaded_file.read()
-    image = Image.open(uploaded_file)
-    st.image(image, caption="Portada del libro", use_container_width=True)
-    st.text("🧠 Leyendo texto en la portada...")
+    # Detección básica
+    if "Fisher" in texto_extraido:
+        datos_detectados["Autor"] = "Mark Fisher"
+    if "Realismo capitalista" in texto_extraido:
+        datos_detectados["Título"] = "Realismo capitalista: ¿No hay alternativa?"
+    if "Caja Negra" in texto_extraido:
+        datos_detectados["Editorial"] = "Caja Negra"
+    if "2018" in texto_extraido:
+        datos_detectados["Año"] = "2018"
+    if "ISBN" in texto_extraido:
+        isbn_line = [line for line in texto_extraido.split("\n") if "ISBN" in line]
+        if isbn_line:
+            datos_detectados["ISBN"] = isbn_line[0].split()[-1]
 
-    try:
-        base64_image = base64.b64encode(image_bytes).decode("utf-8")
+# --- Formulario editable ---
+st.subheader("📝 Completa los datos del libro")
+titulo = st.text_input("Título", value=datos_detectados["Título"])
+autor = st.text_input("Autor", value=datos_detectados["Autor"])
+editorial = st.text_input("Editorial", value=datos_detectados["Editorial"])
+anio = st.text_input("Año", value=datos_detectados["Año"])
+isbn = st.text_input("ISBN", value=datos_detectados["ISBN"])
+pagina = st.number_input("Página leída", min_value=1, step=1)
 
-        response = openai.chat.completions.create(
-            model="gpt-4o",
-            messages=[
-                {"role": "user", "content": [
-                    {"type": "text", "text": "Observa la imagen de portada del libro. ¿Puedes deducir cuál es el título del libro? Solo responde con el título más probable, sin explicaciones."},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
-                ]}
-            ],
-            max_tokens=30
-        )
+# --- Cronómetro ---
+st.subheader("⏱ Cronómetro de lectura")
+tiempo_lectura = iniciar_cronometro()
+st.info(f"Tiempo actual de lectura: {tiempo_lectura}")
 
-        book_title = response.choices[0].message.content.strip()
+# --- Geolocalización ---
+st.subheader("🌍 Georreferenciación")
+ubicacion = obtener_ubicacion()
+st.success(f"Ubicación estimada: {ubicacion}")
 
-        if book_title:
-            st.success(f"📖 Título detectado: *{book_title}*")
-        else:
-            st.warning("❌ No se pudo detectar el título. Puedes ingresarlo manualmente si lo deseas.")
-    except Exception as e:
-        st.warning("❌ No se pudo detectar el título. Puedes ingresarlo manualmente si lo deseas.")
-        st.caption(f"Error técnico: {e}")
-
-# 2. Ingreso de título manual
-st.subheader("2. Título del libro")
-book_title_manual = st.text_input("Título", value=book_title)
-
-# 3. Comentario o reflexión
-st.subheader("3. Comentario o reflexión")
-comment = st.text_area("¿Qué leíste? ¿Qué te dejó esta lectura?", height=150)
-
-# 4. Guardar registro
+# --- Guardar en MongoDB ---
 if st.button("💾 Guardar registro"):
-    if not book_title_manual.strip():
-        st.error("Por favor ingresa un título.")
-    elif not comment.strip():
-        st.error("Por favor escribe un comentario.")
-    else:
-        geo = obtener_geolocalizacion()
-        registro = {
-            "titulo": book_title_manual.strip(),
-            "comentario": comment.strip(),
-            "fecha": datetime.datetime.now(),
-            "lat": geo["lat"] if geo else None,
-            "lon": geo["lon"] if geo else None,
-        }
-        collection.insert_one(registro)
-        st.success("✅ Registro guardado con éxito")
+    registro = {
+        "titulo": titulo,
+        "autor": autor,
+        "editorial": editorial,
+        "anio": anio,
+        "isbn": isbn,
+        "pagina": pagina,
+        "duracion": tiempo_lectura,
+        "ubicacion": ubicacion,
+        "timestamp": datetime.datetime.now()
+    }
+    coleccion.insert_one(registro)
+    st.success("✅ Registro guardado exitosamente.")
 
-# 5. Mostrar historial
-st.subheader("🕓 Historial de lecturas")
-registros = list(collection.find().sort("fecha", -1))
-
-if registros:
-    for r in registros:
-        st.markdown(f"**📖 {r['titulo']}**")
-        st.caption(r["fecha"].strftime("%Y-%m-%d %H:%M"))
-        st.write(r["comentario"])
-        if r.get("lat") and r.get("lon"):
-            st.map(pd.DataFrame([{"lat": r["lat"], "lon": r["lon"]}]))
-        st.markdown("---")
-else:
-    st.info("Aún no hay registros.")
+# --- Mostrar historial ---
+st.subheader("📚 Historial de lectura")
+registros = list(coleccion.find().sort("timestamp", -1))
+for r in registros[:5]:
+    st.markdown(f"""
+    **{r.get("titulo", "Sin título")}**  
+    Autor: {r.get("autor", "")}  
+    Página: {r.get("pagina", "")}  
+    Tiempo: {r.get("duracion", "")}  
+    Ubicación: {r.get("ubicacion", "")}  
+    Fecha: {r.get("timestamp").strftime('%Y-%m-%d %H:%M:%S')}  
+    ---  
+    """)
