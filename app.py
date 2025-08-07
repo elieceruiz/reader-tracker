@@ -1,36 +1,53 @@
 import streamlit as st
-import openai
-import time
-from datetime import datetime
-from pymongo import MongoClient
 from PIL import Image
 import base64
-import geocoder
-import folium
-from streamlit_folium import st_folium
+import openai
+import datetime
+import pymongo
+import requests
+import pandas as pd
+from bson.objectid import ObjectId
 
-# 🎯 Autenticación
+# Configuración inicial
+st.set_page_config(page_title="📚 Seguimiento lector – con cui", layout="centered")
+
+# Conexión a MongoDB
+mongo_client = pymongo.MongoClient(st.secrets["mongo_uri"])
+db = mongo_client["seguimiento_lector"]
+collection = db["registros"]
+
+# Configurar API de OpenAI
 openai.api_key = st.secrets["openai_api_key"]
 openai.organization = st.secrets["openai_org_id"]
-client = MongoClient(st.secrets["mongo_uri"])
-db = client["reader_tracker"]
 
-# 📚 Título principal
+# Función para geolocalización por IP
+@st.cache_data(ttl=3600)
+def obtener_geolocalizacion():
+    try:
+        res = requests.get("https://ipinfo.io/json")
+        data = res.json()
+        lat, lon = map(float, data["loc"].split(","))
+        return {"lat": lat, "lon": lon}
+    except:
+        return None
+
+# Título principal
 st.title("📚 Seguimiento lector – con cui")
 
-# --- Paso 1: Cargar portada del libro ---
+# 1. Subida de portada (opcional)
 st.subheader("1. Sube portada del libro (opcional)")
-uploaded_file = st.file_uploader("Foto de portada", type=["png", "jpg", "jpeg"])
+uploaded_file = st.file_uploader("Foto de portada", type=["jpg", "jpeg", "png"])
 
 book_title = ""
+image_bytes = None
 
 if uploaded_file:
+    image_bytes = uploaded_file.read()
     image = Image.open(uploaded_file)
     st.image(image, caption="Portada del libro", use_container_width=True)
     st.text("🧠 Leyendo texto en la portada...")
 
     try:
-        image_bytes = uploaded_file.read()
         base64_image = base64.b64encode(image_bytes).decode("utf-8")
 
         response = openai.chat.completions.create(
@@ -54,71 +71,43 @@ if uploaded_file:
         st.warning("❌ No se pudo detectar el título. Puedes ingresarlo manualmente si lo deseas.")
         st.caption(f"Error técnico: {e}")
 
-# Entrada manual si es necesario
-if not book_title:
-    book_title = st.text_input("Escribe el título del libro", placeholder="Por ejemplo: Cien años de soledad")
+# 2. Ingreso de título manual
+st.subheader("2. Título del libro")
+book_title_manual = st.text_input("Título", value=book_title)
 
-# --- Paso 2: Verificar colección ---
-if book_title:
-    collection_name = book_title.lower().replace(" ", "_")
+# 3. Comentario o reflexión
+st.subheader("3. Comentario o reflexión")
+comment = st.text_area("¿Qué leíste? ¿Qué te dejó esta lectura?", height=150)
+
+# 4. Guardar registro
+if st.button("💾 Guardar registro"):
+    if not book_title_manual.strip():
+        st.error("Por favor ingresa un título.")
+    elif not comment.strip():
+        st.error("Por favor escribe un comentario.")
+    else:
+        geo = obtener_geolocalizacion()
+        registro = {
+            "titulo": book_title_manual.strip(),
+            "comentario": comment.strip(),
+            "fecha": datetime.datetime.now(),
+            "lat": geo["lat"] if geo else None,
+            "lon": geo["lon"] if geo else None,
+        }
+        collection.insert_one(registro)
+        st.success("✅ Registro guardado con éxito")
+
+# 5. Mostrar historial
+st.subheader("🕓 Historial de lecturas")
+registros = list(collection.find().sort("fecha", -1))
+
+if registros:
+    for r in registros:
+        st.markdown(f"**📖 {r['titulo']}**")
+        st.caption(r["fecha"].strftime("%Y-%m-%d %H:%M"))
+        st.write(r["comentario"])
+        if r.get("lat") and r.get("lon"):
+            st.map(pd.DataFrame([{"lat": r["lat"], "lon": r["lon"]}]))
+        st.markdown("---")
 else:
-    collection_name = "libro_sin_titulo"
-
-collection = db[collection_name]
-
-# --- Paso 3: Página de inicio ---
-st.subheader("2. ¿En qué página comienzas hoy?")
-start_page = st.number_input("Página de inicio", min_value=1, step=1)
-
-# --- Paso 4: Cronómetro de lectura ---
-st.subheader("3. Cronómetro de lectura")
-if "start_time" not in st.session_state:
-    st.session_state.start_time = None
-
-col1, col2 = st.columns(2)
-with col1:
-    start_btn = st.button("▶️ Iniciar lectura")
-with col2:
-    stop_btn = st.button("⏹️ Terminar lectura")
-
-if start_btn:
-    st.session_state.start_time = time.time()
-    st.success("⏱️ Cronómetro iniciado.")
-
-if stop_btn and st.session_state.start_time:
-    elapsed = int(time.time() - st.session_state.start_time)
-    minutes = elapsed // 60
-    seconds = elapsed % 60
-    st.success(f"⏹️ Tiempo registrado: {minutes} min {seconds} seg")
-
-    # --- Paso 5: Página final y resumen ---
-    end_page = st.number_input("¿En qué página terminaste?", min_value=start_page, step=1, key="end_page")
-    resumen = st.text_area("¿Qué se te quedó de esta lectura?", placeholder="Escribe aquí...")
-
-    # --- Paso 6: Georreferenciación ---
-    st.subheader("📍 Ubicación de lectura (aproximada)")
-    g = geocoder.ip("me")
-    coords = g.latlng or [0.0, 0.0]
-
-    # Mapa básico
-    st.map(data={"lat": [coords[0]], "lon": [coords[1]]}, zoom=10)
-
-    # Mapa interactivo
-    m = folium.Map(location=coords, zoom_start=12)
-    folium.Marker(coords, popup="Lectura").add_to(m)
-    st_folium(m, width=700, height=400)
-
-    # --- Paso 7: Guardar en MongoDB ---
-    doc = {
-        "titulo": book_title or "Sin título",
-        "inicio": start_page,
-        "final": end_page,
-        "resumen": resumen,
-        "duracion_min": minutes,
-        "duracion_seg": seconds,
-        "timestamp": datetime.utcnow(),
-        "ubicacion": {"lat": coords[0], "lon": coords[1]}
-    }
-    collection.insert_one(doc)
-    st.success("✅ Registro guardado con cui.")
-    st.session_state.start_time = None
+    st.info("Aún no hay registros.")
