@@ -1,7 +1,6 @@
 streamlit
-pytesseract
-Pillow
-openai
-geopy
 pymongo
-python-dotenv
+openai
+pillow
+requests
+pandas
