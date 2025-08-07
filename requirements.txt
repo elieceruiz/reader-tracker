@@ -1,4 +1,7 @@
 streamlit
-pymongo
 openai
+pymongo
 Pillow
+geocoder
+folium
+streamlit-folium
