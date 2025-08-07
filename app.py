@@ -1,112 +1,108 @@
 import streamlit as st
-from pymongo import MongoClient
-import pytesseract
 from PIL import Image
+import base64
+import io
 import openai
-import os
-import time
+from pymongo import MongoClient
 from datetime import datetime
-from io import BytesIO
 
-# Config
-openai.api_key = os.getenv("OPENAI_API_KEY")
-mongo_uri = os.getenv("MONGO_URI")
+# --- Configuración inicial ---
+st.set_page_config(page_title="📚 Seguimiento lector – con cui", layout="centered")
+st.title("📚 Seguimiento lector – con cui")
+
+# --- Claves (usa st.secrets o variables locales) ---
+openai.api_key = st.secrets["OPENAI_API_KEY"]
+mongo_uri = st.secrets["MONGO_URI"]
 client = MongoClient(mongo_uri)
 db = client["reader_tracker"]
 
-# UI
-st.set_page_config(page_title="Reader Tracker", layout="centered")
-st.title("📚 Seguimiento lector – con cui")
+# --- Función para extraer texto desde imagen usando GPT-4o ---
+def extract_title_with_openai(image: Image.Image) -> str:
+    buffer = io.BytesIO()
+    image.save(buffer, format="JPEG")
+    img_bytes = buffer.getvalue()
+    base64_image = base64.b64encode(img_bytes).decode()
 
-# --- 1. Subir imagen del libro y extraer nombre ---
-st.subheader("1. Sube portada del libro (opcional)")
-img = st.file_uploader("Foto de portada", type=["png", "jpg", "jpeg"])
+    response = openai.ChatCompletion.create(
+        model="gpt-4o",
+        messages=[
+            {"role": "system", "content": "Extrae el título del libro a partir de esta portada. Responde solo con el título."},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "¿Cuál es el título del libro en esta imagen?"},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
+                ]
+            }
+        ],
+        max_tokens=50,
+        temperature=0.2,
+    )
+    return response.choices[0].message.content.strip()
+
+# --- Sube portada del libro ---
+uploaded_file = st.file_uploader("### 1. Sube portada del libro (opcional)", type=["png", "jpg", "jpeg"])
 book_title = ""
 
-if img:
-    image = Image.open(img)
-    st.image(image, caption="Portada del libro", use_column_width=True)
-    book_title = pytesseract.image_to_string(image).strip()
-    book_title = book_title.split("\n")[0]
-    st.success(f"Título extraído: {book_title}")
+if uploaded_file:
+    image = Image.open(uploaded_file)
+    st.image(image, caption="Portada del libro", use_container_width=True)
 
-# --- 2. Pedir título manual si no hay OCR válido ---
-book_title = st.text_input("Nombre del libro", value=book_title)
+    with st.spinner("Leyendo título con OpenAI..."):
+        book_title = extract_title_with_openai(image)
+        st.success(f"📖 Título detectado: **{book_title}**")
+
+# --- Entrada manual si no hay portada ---
 if not book_title:
-    st.stop()
+    book_title = st.text_input("📘 Escribe el título del libro")
 
-# --- 3. Crear colección o usar existente ---
-collection = db[book_title.replace(" ", "_").lower()]
+if book_title:
+    col = db[book_title.replace(" ", "_").lower()]
+    st.markdown("---")
 
-# --- 4. Revisar última sesión ---
-last_session = collection.find_one(sort=[("timestamp", -1)])
-last_page = last_session["end_page"] if last_session else None
-last_time = last_session["timestamp"] if last_session else None
-last_note = last_session["note"] if last_session else None
+    # --- Registro inicial ---
+    st.subheader("2. ¿En qué página comienzas hoy?")
+    start_page = st.number_input("Página de inicio", min_value=1, step=1)
+    start_btn = st.button("▶️ Comenzar lectura")
 
-# --- 5. Página inicial ---
-st.subheader("2. Página en la que comienzas hoy")
-start_page = st.number_input("Página actual", min_value=1, value=last_page + 1 if last_page else 1)
+    if start_btn:
+        start_time = datetime.utcnow()
+        col.insert_one({
+            "inicio": start_time,
+            "pagina_inicio": start_page,
+            "activo": True
+        })
+        st.success("🕒 Seguimiento iniciado.")
 
-# --- 6. Cronómetro ---
-st.subheader("3. Cronómetro de lectura")
-start = st.button("▶️ Empezar")
-stop = st.button("⏹ Parar")
+    # --- Parar lectura ---
+    st.subheader("3. ¿Dónde terminaste y qué se te quedó?")
+    stop_page = st.number_input("Página de término", min_value=1, step=1)
+    notes = st.text_area("📝 ¿Qué se te quedó de esta lectura?")
+    stop_btn = st.button("⏹️ Terminar sesión")
 
-if "start_time" not in st.session_state:
-    st.session_state.start_time = None
+    if stop_btn:
+        doc = col.find_one({"activo": True}, sort=[("inicio", -1)])
+        if doc:
+            end_time = datetime.utcnow()
+            col.update_one(
+                {"_id": doc["_id"]},
+                {
+                    "$set": {
+                        "fin": end_time,
+                        "pagina_fin": stop_page,
+                        "notas": notes,
+                        "activo": False
+                    }
+                }
+            )
+            duration = end_time - doc["inicio"]
+            mins = duration.total_seconds() // 60
+            st.success(f"✅ Sesión registrada. Duración: {int(mins)} min.")
 
-if start:
-    st.session_state.start_time = time.time()
-    st.success("¡Lectura iniciada!")
-
-if stop and st.session_state.start_time:
-    duration = time.time() - st.session_state.start_time
-    minutes = int(duration // 60)
-    seconds = int(duration % 60)
-    st.success(f"Tiempo registrado: {minutes} min {seconds} s")
-else:
-    duration = None
-
-# --- 7. Página final y nota ---
-if stop and duration:
-    end_page = st.number_input("¿En qué página terminaste?", min_value=start_page, value=start_page)
-    note = st.text_area("¿Qué se te quedó de esta sesión?")
-    
-    if st.button("💾 Guardar sesión"):
-        doc = {
-            "start_page": int(start_page),
-            "end_page": int(end_page),
-            "duration_seconds": int(duration),
-            "note": note,
-            "timestamp": datetime.utcnow()
-        }
-        collection.insert_one(doc)
-        st.success("Sesión registrada.")
-        st.rerun()
-
-# --- 8. Reflexión IA basada en historial ---
-if last_session and st.checkbox("🧠 Mostrar observación de la IA (OpenAI)"):
-    # Construir prompt
-    now = datetime.utcnow()
-    gap = (now - last_time).days
-    short_note = last_note[:300] if last_note else ""
-
-    prompt = f"""
-Eres un lector consciente que lleva un diario lector. Hace {gap} días leíste el mismo libro. Esta fue tu última nota: "{short_note}".
-Hoy retomas desde la página {start_page}. ¿Qué te dirías a ti mismo para notar si hay un hilo, un corte, o un cambio de tono en tu proceso?
-Hazlo en tono reflexivo, no condescendiente. No adivines nada, solo formula preguntas o recordatorios.
-"""
-
-    try:
-        response = openai.ChatCompletion.create(
-            model="gpt-4o",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.7,
-        )
-        ai_message = response.choices[0].message.content
-        st.markdown("### 🧠 IA dice:")
-        st.info(ai_message)
-    except Exception as e:
-        st.warning("Error al consultar OpenAI. Revisa tu API Key.")
-        st.text(str(e))
+    # --- Historial (opcional) ---
+    with st.expander("📖 Ver historial"):
+        rows = list(col.find().sort("inicio", -1))
+        for r in rows:
+            st.write(f"{r['inicio'].strftime('%Y-%m-%d %H:%M')} - {r.get('pagina_inicio')} ➡️ {r.get('pagina_fin', '?')}")
+            if "notas" in r:
+                st.caption(r["notas"])
