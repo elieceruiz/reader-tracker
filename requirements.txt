@@ -1,7 +1,2 @@
 streamlit
-pillow
-openai
 pymongo
-requests
-pandas
-streamlit-js-eval
