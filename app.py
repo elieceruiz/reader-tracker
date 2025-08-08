@@ -55,7 +55,7 @@ def coleccion_por_titulo(titulo):
     nombre = titulo.lower().replace(" ", "_")
     return db[nombre]
 
-def iniciar_lectura(titulo, paginas_totales, foto_b64=None):
+def iniciar_lectura(titulo, paginas_totales, foto_b64):
     col = coleccion_por_titulo(titulo)
     doc = {
         "inicio": datetime.now(tz),
@@ -129,7 +129,7 @@ def render_map_con_dibujo(api_key):
         <script src="https://maps.googleapis.com/maps/api/js?key={api_key}&libraries=geometry"></script>
     </head>
     <body>
-        <div id="map" style="height:100%;"></div>
+        <div id="map" style="height: 100%; width: 100%;"></div>
         <div style="position:absolute;top:10px;left:10px;background:white;padding:8px;z-index:5;">
             <button onclick="finalizarLectura()">Finalizar lectura</button>
             <div id="distancia"></div>
@@ -241,7 +241,7 @@ if mensaje_js and isinstance(mensaje_js, dict) and "type" in mensaje_js and mens
     finalizar_lectura()
     st.rerun()
 
-# === SELECCIÓN DE MÓDULO ===
+# --- SELECCIÓN DE MÓDULO ---
 seccion = st.selectbox(
     "Selecciona una sección:",
     [
@@ -290,46 +290,27 @@ elif seccion == "Lectura con Cronómetro":
     if not st.session_state["lectura_titulo"]:
         titulo_manual = st.text_input("Ingresa manualmente el título del texto:")
         if titulo_manual:
-            nombre_col = titulo_manual.lower().replace(" ", "_")
-            col = db[nombre_col]
-            ultima_lectura = col.find_one(sort=[("inicio", -1)])
-
-            if ultima_lectura:
-                paginas_totales = ultima_lectura.get("paginas_totales")
-                st.info(f"Se encontró historial para '{titulo_manual}'. Último total de páginas registrado: {paginas_totales}")
-                usar_ultimo = st.checkbox("Usar el número de páginas registrado", key="usar_ultimo_paginas")
-                if usar_ultimo:
-                    st.session_state["lectura_titulo"] = titulo_manual
-                    st.session_state["lectura_paginas"] = paginas_totales
-                else:
-                    paginas_input = st.number_input(
-                        "Ingresa número total de páginas del texto:",
-                        min_value=1,
-                        step=1,
-                        key="input_paginas",
-                        value=0
-                    )
-                    if paginas_input > 0:
-                        if st.button("Confirmar número de páginas"):
-                            st.session_state["lectura_titulo"] = titulo_manual
-                            st.session_state["lectura_paginas"] = paginas_input
+            st.session_state["lectura_titulo"] = titulo_manual.strip()
+            # Buscar historial para ese título para autocompletar páginas
+            col = coleccion_por_titulo(st.session_state["lectura_titulo"])
+            lecturas = list(col.find().sort("inicio", -1))
+            if lecturas:
+                ultima = lecturas[0]
+                st.session_state["lectura_paginas"] = ultima.get("paginas_totales", 1)
+                st.info(f"Se cargaron datos del historial. Páginas totales: {st.session_state['lectura_paginas']}")
             else:
+                # No hay historial, pedir número de páginas
                 paginas_input = st.number_input(
                     "No se encontró historial. Ingresa número total de páginas del texto:",
                     min_value=1,
                     step=1,
                     key="input_paginas",
-                    value=0
+                    value=1
                 )
-                if paginas_input > 0:
-                    if st.button("Confirmar número de páginas"):
-                        st.session_state["lectura_titulo"] = titulo_manual
-                        st.session_state["lectura_paginas"] = paginas_input
-
-    if st.session_state["lectura_titulo"] and st.session_state["lectura_paginas"]:
+                st.session_state["lectura_paginas"] = paginas_input
+    else:
         st.markdown(f"**Título:** {st.session_state['lectura_titulo']}")
         st.markdown(f"**Páginas totales:** {st.session_state['lectura_paginas']}")
-
         if not st.session_state["lectura_en_curso"]:
             if st.button("▶️ Iniciar lectura"):
                 st.session_state["lectura_inicio"] = datetime.now(tz)
@@ -340,10 +321,11 @@ elif seccion == "Lectura con Cronómetro":
                 iniciar_lectura(
                     st.session_state["lectura_titulo"],
                     st.session_state["lectura_paginas"],
-                    st.session_state.get("foto_base64", None)
+                    st.session_state["foto_base64"],
                 )
                 st.rerun()
         else:
+            st.markdown("### Lectura en curso...")
             if st.session_state["cronometro_running"]:
                 st.markdown(f"⏰ Tiempo transcurrido: {timedelta(seconds=st.session_state['cronometro_segundos'])}")
                 st.session_state["cronometro_segundos"] += 1
@@ -355,25 +337,27 @@ elif seccion == "Lectura con Cronómetro":
                 "Página actual:",
                 min_value=1,
                 max_value=st.session_state["lectura_paginas"],
-                value=st.session_state.get("lectura_pagina_actual", 1),
+                value=st.session_state["lectura_pagina_actual"] or 1,
                 step=1,
+                key="pagina_actual"
             )
-            if pagina != st.session_state.get("lectura_pagina_actual", 1):
+            if pagina != st.session_state["lectura_pagina_actual"]:
                 st.session_state["lectura_pagina_actual"] = pagina
-                actualizar_lectura(pagina, st.session_state.get("ruta_actual", []), st.session_state.get("ruta_distancia_km", 0))
+                actualizar_lectura(
+                    pagina,
+                    st.session_state["ruta_actual"],
+                    st.session_state["ruta_distancia_km"],
+                )
 
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                if st.button("⏸️ Pausar cronómetro"):
-                    st.session_state["cronometro_running"] = False
-            with col2:
-                if st.button("▶️ Reanudar cronómetro"):
-                    st.session_state["cronometro_running"] = True
-            with col3:
-                if st.button("⏹️ Finalizar lectura"):
-                    finalizar_lectura()
-                    st.success("Lectura finalizada y guardada.")
-                    st.rerun()
+            if st.button("⏸️ Pausar cronómetro"):
+                st.session_state["cronometro_running"] = False
+            if st.button("▶️ Reanudar cronómetro"):
+                st.session_state["cronometro_running"] = True
+
+            if st.button("⏹️ Finalizar lectura"):
+                finalizar_lectura()
+                st.success("Lectura finalizada y guardada.")
+                st.rerun()
 
 # --- MÓDULO 3: Mapa en vivo ---
 elif seccion == "Mapa en vivo":
@@ -383,12 +367,12 @@ elif seccion == "Mapa en vivo":
         st.markdown(f"Ruta guardada con {len(st.session_state['ruta_actual'])} puntos.")
         st.markdown(f"Distancia total: {st.session_state['ruta_distancia_km']:.2f} km")
 
-# --- MÓDULO 4: Historial ---
+# --- MÓDULO 4: Historial de lecturas ---
 elif seccion == "Historial de lecturas":
     st.header("Historial de lecturas por título")
     titulo_hist = st.text_input("Ingresa el título para consultar historial:")
     if titulo_hist:
-        col = coleccion_por_titulo(titulo_hist)
+        col = coleccion_por_titulo(titulo_hist.strip())
         lecturas = list(col.find().sort("inicio", -1))
         if not lecturas:
             st.info("No hay registros de lecturas para este texto.")
