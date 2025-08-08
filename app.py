@@ -40,6 +40,7 @@ for key, default in {
     "foto_base64": None,
     "cronometro_segundos": 0,
     "cronometro_running": False,
+    "cronometro_ultima_marca": None,
     "lectura_id": None,
 }.items():
     if key not in st.session_state:
@@ -93,31 +94,8 @@ def finalizar_lectura():
     for key in ["lectura_titulo", "lectura_paginas", "lectura_pagina_actual",
                 "lectura_inicio", "lectura_en_curso", "ruta_actual",
                 "ruta_distancia_km", "foto_base64", "cronometro_segundos",
-                "cronometro_running", "lectura_id"]:
+                "cronometro_running", "cronometro_ultima_marca", "lectura_id"]:
         st.session_state[key] = None if key != "lectura_pagina_actual" else 0
-
-def mostrar_historial(titulo):
-    col = coleccion_por_titulo(titulo)
-    lecturas = list(col.find().sort("inicio", -1))
-    if not lecturas:
-        st.info("No hay registros de lecturas para este texto.")
-        return
-    data = []
-    for i, l in enumerate(lecturas):
-        inicio = to_datetime_local(l["inicio"]).strftime("%Y-%m-%d %H:%M:%S")
-        fin = to_datetime_local(l["fin"]).strftime("%Y-%m-%d %H:%M:%S") if l.get("fin") else "-"
-        duracion = str(timedelta(seconds=l.get("duracion_segundos", 0))) if l.get("duracion_segundos") else "-"
-        paginas = f"{l.get('pagina_final', '-')}/{l.get('paginas_totales', '-')}"
-        distancia = f"{l.get('distancia_km', 0):.2f} km"
-        data.append({
-            "#": len(lecturas)-i,
-            "Inicio": inicio,
-            "Fin": fin,
-            "Duración": duracion,
-            "Páginas": paginas,
-            "Distancia": distancia
-        })
-    st.dataframe(data)
 
 def render_map_con_dibujo(api_key):
     from streamlit.components.v1 import html
@@ -287,14 +265,11 @@ if seccion == "Tiempo de desarrollo":
 elif seccion == "Lectura con Cronómetro":
     st.header("Lectura con Cronómetro")
 
-    # Paso 1: ingresar título manualmente (si no hay título en sesión)
     if not st.session_state["lectura_titulo"]:
         titulo_manual = st.text_input("Ingresa manualmente el título del texto:")
         if titulo_manual:
-            # Buscar coleccion por título
             nombre_col = titulo_manual.lower().replace(" ", "_")
             col = db[nombre_col]
-            # Obtener última lectura (más reciente)
             ultima_lectura = col.find_one(sort=[("inicio", -1)])
 
             if ultima_lectura:
@@ -310,34 +285,48 @@ elif seccion == "Lectura con Cronómetro":
                         st.session_state["lectura_titulo"] = titulo_manual
                         st.session_state["lectura_paginas"] = paginas_input
             else:
-                # No hay historial
                 paginas_input = st.number_input("No se encontró historial. Ingresa número total de páginas del texto:", min_value=1, step=1)
                 if paginas_input > 0:
                     st.session_state["lectura_titulo"] = titulo_manual
                     st.session_state["lectura_paginas"] = paginas_input
 
-    # Mostrar datos y controles de lectura si ya hay título y páginas
     if st.session_state["lectura_titulo"] and st.session_state["lectura_paginas"]:
         st.markdown(f"**Título:** {st.session_state['lectura_titulo']}")
         st.markdown(f"**Páginas totales:** {st.session_state['lectura_paginas']}")
 
         if not st.session_state["lectura_en_curso"]:
+            pagina_inicio = st.number_input(
+                "Página de inicio:",
+                min_value=1,
+                max_value=st.session_state["lectura_paginas"],
+                value=1,
+                step=1
+            )
+            st.session_state["lectura_pagina_actual"] = pagina_inicio
+
             if st.button("▶️ Iniciar lectura"):
                 st.session_state["lectura_inicio"] = datetime.now(tz)
                 st.session_state["lectura_en_curso"] = True
                 st.session_state["cronometro_running"] = True
+                st.session_state["cronometro_ultima_marca"] = datetime.now(tz)
                 st.session_state["cronometro_segundos"] = 0
                 iniciar_lectura(st.session_state["lectura_titulo"], st.session_state["lectura_paginas"], st.session_state["foto_base64"])
                 st.rerun()
+
         else:
             st.markdown("### Lectura en curso...")
 
             if st.session_state["cronometro_running"]:
-                st.markdown(f"⏰ Tiempo transcurrido: {timedelta(seconds=st.session_state['cronometro_segundos'])}")
-                st.session_state["cronometro_segundos"] += 1
-                st.rerun()
+                ahora = datetime.now(tz)
+                ultima = st.session_state.get("cronometro_ultima_marca", ahora)
+                delta = (ahora - ultima).total_seconds()
+                if delta < 5:
+                    st.session_state["cronometro_segundos"] += delta
+                st.session_state["cronometro_ultima_marca"] = ahora
+                st.markdown(f"⏰ Tiempo transcurrido: {timedelta(seconds=int(st.session_state['cronometro_segundos']))}")
+                st_autorefresh(interval=1000, key="cronometro_refresh_lectura")
             else:
-                st.markdown(f"⏰ Tiempo detenido: {timedelta(seconds=st.session_state['cronometro_segundos'])}")
+                st.markdown(f"⏰ Tiempo detenido: {timedelta(seconds=int(st.session_state['cronometro_segundos']))}")
 
             pagina = st.number_input(
                 "Página actual:",
@@ -350,15 +339,19 @@ elif seccion == "Lectura con Cronómetro":
                 st.session_state["lectura_pagina_actual"] = pagina
                 actualizar_lectura(pagina, st.session_state["ruta_actual"], st.session_state["ruta_distancia_km"])
 
-            if st.button("⏸️ Pausar cronómetro"):
-                st.session_state["cronometro_running"] = False
-            if st.button("▶️ Reanudar cronómetro"):
-                st.session_state["cronometro_running"] = True
-
-            if st.button("⏹️ Finalizar lectura"):
-                finalizar_lectura()
-                st.success("Lectura finalizada y guardada.")
-                st.rerun()
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                if st.button("⏸️ Pausar cronómetro") and st.session_state["cronometro_running"]:
+                    st.session_state["cronometro_running"] = False
+            with col2:
+                if st.button("▶️ Reanudar cronómetro") and not st.session_state["cronometro_running"]:
+                    st.session_state["cronometro_running"] = True
+                    st.session_state["cronometro_ultima_marca"] = datetime.now(tz)
+            with col3:
+                if st.button("⏹️ Finalizar lectura"):
+                    finalizar_lectura()
+                    st.success("Lectura finalizada y guardada.")
+                    st.rerun()
 
 # --- MÓDULO 3: Mapa en vivo ---
 elif seccion == "Mapa en vivo":
@@ -373,4 +366,24 @@ elif seccion == "Historial de lecturas":
     st.header("Historial de lecturas por título")
     titulo_hist = st.text_input("Ingresa el título para consultar historial:")
     if titulo_hist:
-        mostrar_historial(titulo_hist)
+        col = coleccion_por_titulo(titulo_hist)
+        lecturas = list(col.find().sort("inicio", -1))
+        if not lecturas:
+            st.info("No hay registros de lecturas para este texto.")
+        else:
+            data = []
+            for i, l in enumerate(lecturas):
+                inicio = to_datetime_local(l["inicio"]).strftime("%Y-%m-%d %H:%M:%S")
+                fin = to_datetime_local(l["fin"]).strftime("%Y-%m-%d %H:%M:%S") if l.get("fin") else "-"
+                duracion = str(timedelta(seconds=l.get("duracion_segundos", 0))) if l.get("duracion_segundos") else "-"
+                paginas = f"{l.get('pagina_final', '-')}/{l.get('paginas_totales', '-')}"
+                distancia = f"{l.get('distancia_km', 0):.2f} km"
+                data.append({
+                    "#": len(lecturas) - i,
+                    "Inicio": inicio,
+                    "Fin": fin,
+                    "Duración": duracion,
+                    "Páginas": paginas,
+                    "Distancia": distancia
+                })
+            st.dataframe(data)
