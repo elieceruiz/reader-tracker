@@ -9,10 +9,10 @@ import pymongo
 import openai
 from streamlit_js_eval import streamlit_js_eval
 from streamlit.components.v1 import html
+from dateutil.parser import parse
 
 # ---------------- CONFIG ----------------
 st.set_page_config(page_title="Reader Tracker", layout="wide")
-st.title("Reader Tracker")
 
 # Secrets
 mongo_uri = st.secrets.get("mongo_uri")
@@ -20,29 +20,25 @@ google_maps_api_key = st.secrets.get("google_maps_api_key")
 openai_api_key = st.secrets.get("openai_api_key")
 openai.organization = st.secrets.get("openai_org_id", None)
 
-# Zona horaria
 tz = pytz.timezone("America/Bogota")
 
 # Conexión MongoDB
-client = None
-dev_col = None
+mongo_collection = None
 if mongo_uri:
     try:
         client = pymongo.MongoClient(mongo_uri)
         db = client["reader_tracker"]
-        dev_col = db["dev_tracker"]  # Colección para tiempo de desarrollo
-        # Aquí podrían ir otras colecciones para historial, órdenes, etc.
+        mongo_collection = db["lecturas"]
     except Exception as e:
         st.warning(f"No se pudo conectar a MongoDB: {e}")
 
-# Utilidad robusta para convertir a datetime local
-from dateutil.parser import parse
+# ---------------- FUNCIONES UTILITARIAS ----------------
+
 def to_datetime_local(dt):
     if not isinstance(dt, datetime):
         dt = parse(dt)
     return dt.astimezone(tz)
 
-# --------- FUNCIONES DEL MÓDULO MAPA ----------
 def render_live_map(api_key, height=420, center_coords=None):
     center_lat = center_coords[0] if center_coords else 0
     center_lon = center_coords[1] if center_coords else 0
@@ -59,7 +55,6 @@ def render_live_map(api_key, height=420, center_coords=None):
         <script>
           let map;
           let marker;
-          let path = [];
 
           function initMap() {{
             map = new google.maps.Map(document.getElementById('map'), {{
@@ -105,63 +100,63 @@ def render_live_map(api_key, height=420, center_coords=None):
     """
     html(html_code, height=height)
 
+# ---------------- MÓDULOS ----------------
 
-# --------- DROPDOWN DE SECCIONES ----------
-seccion = st.selectbox(
-    "Selecciona una sección:",
-    ["Tiempo de desarrollo", "GPT-4o y Cronómetro", "Mapa en vivo", "Historial de lecturas"]
-)
+# --- Módulo 1: Tiempo dedicado al desarrollo ---
+def modulo_tiempo_desarrollo():
+    st.header("Tiempo dedicado al desarrollo")
+    if "dev_start" not in st.session_state:
+        st.session_state["dev_start"] = None
 
-
-# ------------- MÓDULO 1: TIEMPO DE DESARROLLO -------------
-if seccion == "Tiempo de desarrollo":
-    st.subheader("⏱️ Tiempo dedicado al desarrollo")
-
-    if dev_col is None:
-        st.error("No hay conexión a MongoDB para registrar el tiempo de desarrollo.")
+    if st.session_state["dev_start"] is None:
+        if st.button("🟢 Iniciar desarrollo"):
+            st.session_state["dev_start"] = datetime.now(tz)
+            st.success("🧠 Desarrollo iniciado")
+            st.rerun()
     else:
-        evento = dev_col.find_one({"tipo": "ordenador_dev", "en_curso": True})
+        start_time = st.session_state["dev_start"]
+        elapsed = datetime.now(tz) - start_time
+        st.markdown(f"🧠 Desarrollo en curso desde las {start_time.strftime('%H:%M:%S')}")
+        st.markdown(f"⏱️ Tiempo transcurrido: {str(elapsed).split('.')[0]}")
 
-        if not evento:
-            # No hay desarrollo activo: mostramos solo botón inicio
-            if st.button("🟢 Iniciar desarrollo"):
-                dev_col.insert_one({"tipo": "ordenador_dev", "inicio": datetime.now(tz), "en_curso": True})
-                st.experimental_rerun()
-        else:
-            # Hay desarrollo activo: mostrar cronómetro y botón detener
-            hora_inicio = to_datetime_local(evento["inicio"])
-            st.success(f"🧠 Desarrollo en curso desde las {hora_inicio.strftime('%H:%M:%S')}")
-            segundos_transcurridos = int((datetime.now(tz) - hora_inicio).total_seconds())
-            cronometro = st.empty()
-            stop_button = st.button("⏹️ Finalizar desarrollo")
+        if st.button("⏹️ Finalizar desarrollo"):
+            # Aquí podrías guardar el registro en MongoDB si quieres
+            st.session_state["dev_start"] = None
+            st.success("✅ Desarrollo finalizado")
+            st.rerun()
 
-            if stop_button:
-                dev_col.update_one({"_id": evento["_id"]}, {"$set": {"fin": datetime.now(tz), "en_curso": False}})
-                st.success("✅ Registro finalizado.")
-                st.experimental_rerun()
+# --- Módulo 2: GPT-4o, detección título/autor y cronómetro lectura ---
+def modulo_gpt_cronometro():
+    st.header("GPT-4o, detección título/autor y cronómetro lectura")
+    st.info("Pendiente integrar aquí toda la lógica que ya tenés para detectar título, autor, registrar páginas, cronómetro y resumen.")
 
-            duracion = str(timedelta(seconds=segundos_transcurridos))
-            cronometro.markdown(f"### ⏱️ Duración: {duracion}")
-
-
-
-# ------------- MÓDULO 2: GPT-4o y Cronómetro (pendiente) -------------
-elif seccion == "GPT-4o y Cronómetro":
-    st.header("Sección: GPT-4o y Cronómetro")
-    st.info("Aquí irá todo lo relacionado a GPT-4o, detección de título, autor y cronómetro (pendiente implementar).")
-
-
-# ------------- MÓDULO 3: MAPA EN VIVO -------------
-elif seccion == "Mapa en vivo":
-    st.header("Sección: Mapa en vivo")
-
+# --- Módulo 3: Mapa en vivo ---
+def modulo_mapa_en_vivo():
+    st.header("Mapa en vivo")
     if google_maps_api_key:
         render_live_map(google_maps_api_key, height=520, center_coords=st.session_state.get("start_coords"))
     else:
         st.info("Añadí google_maps_api_key en st.secrets para ver el mapa dinámico.")
 
+# --- Módulo 4: Historial de lecturas ---
+def modulo_historial():
+    st.header("Historial de lecturas")
+    st.info("Pendiente implementar historial de lecturas con datos locales y MongoDB.")
 
-# ------------- MÓDULO 4: HISTORIAL DE LECTURAS (pendiente) -------------
+# ---------------- INTERFAZ PRINCIPAL ----------------
+
+st.title("Reader Tracker")
+
+seccion = st.selectbox(
+    "Selecciona una sección:",
+    ["Tiempo de desarrollo", "GPT-4o y cronómetro", "Mapa en vivo", "Historial de lecturas"]
+)
+
+if seccion == "Tiempo de desarrollo":
+    modulo_tiempo_desarrollo()
+elif seccion == "GPT-4o y cronómetro":
+    modulo_gpt_cronometro()
+elif seccion == "Mapa en vivo":
+    modulo_mapa_en_vivo()
 elif seccion == "Historial de lecturas":
-    st.header("Sección: Historial de lecturas")
-    st.info("Aquí irá el historial de lecturas (pendiente implementar).")
+    modulo_historial()
