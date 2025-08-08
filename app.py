@@ -83,7 +83,9 @@ def openai_extract_title_author(image_bytes):
         st.warning(f"Error al llamar a OpenAI: {e}")
         return "", ""
 
-def render_live_map(api_key, height=420):
+def render_live_map(api_key, height=420, center_coords=None):
+    center_lat = center_coords[0] if center_coords else 0
+    center_lon = center_coords[1] if center_coords else 0
     html_code = f"""
     <!doctype html>
     <html>
@@ -103,10 +105,10 @@ def render_live_map(api_key, height=420):
           function initMap() {{
             map = new google.maps.Map(document.getElementById('map'), {{
               zoom: 17,
-              center: {{lat:0, lng:0}},
+              center: {{lat:{center_lat}, lng:{center_lon}}},
               mapTypeId: 'roadmap'
             }});
-            marker = new google.maps.Marker({{ map: map, position: {{lat:0, lng:0}}, title: "Tú" }});
+            marker = new google.maps.Marker({{ map: map, position: {{lat:{center_lat}, lng:{center_lon}}}, title: "Tú" }});
             poly = new google.maps.Polyline({{
               strokeColor: '#FF0000',
               strokeOpacity: 1.0,
@@ -161,7 +163,7 @@ col_map, col_ctrl = st.columns((2,1))
 with col_map:
     st.subheader("Mapa en vivo (permite seguimiento del movimiento del celu)")
     if google_maps_api_key:
-        render_live_map(google_maps_api_key, height=520)
+        render_live_map(google_maps_api_key, height=520, center_coords=st.session_state.get("start_coords"))
     else:
         st.info("Añadí google_maps_api_key en st.secrets para ver el mapa dinámico.")
 
@@ -169,6 +171,10 @@ with col_ctrl:
     st.subheader("Controles")
 
     st.markdown("**1)** Capturar ubicación de inicio (botón). Esto toma una lectura puntual del navegador y la guarda como inicio.")
+
+    if "start_coords" not in st.session_state:
+        st.session_state["start_coords"] = None
+
     if st.button("📍 Capturar ubicación inicio"):
         js_getpos = """
         new Promise((resolve) => {
@@ -183,18 +189,24 @@ with col_ctrl:
         coords = streamlit_js_eval(js_expressions=js_getpos, key="getpos_start")
         if coords:
             st.session_state["start_coords"] = (float(coords["latitude"]), float(coords["longitude"]))
-            st.success(f"Ubicación inicio capturada: {st.session_state['start_coords']}")
+            st.success(f"📍 Ubicación de inicio confirmada: Latitude {st.session_state['start_coords'][0]:.6f}, Longitude {st.session_state['start_coords'][1]:.6f} ✔️")
         else:
             st.error("No se pudo obtener la ubicación desde el navegador. Asegurate de dar permiso.")
 
+    if st.session_state["start_coords"]:
+        lat, lon = st.session_state["start_coords"]
+        st.markdown(f"### 📍 Ubicación confirmada: **Lat {lat:.6f}**, **Lon {lon:.6f}** ✔️")
+
     st.markdown("---")
     st.markdown("**2)** Sube la foto de la portada (opcional) y detectá título/autor con GPT-4o.")
+
     uploaded = st.file_uploader("Foto (portada o página interior clara)", type=["jpg","jpeg","png"])
+
     titulo_sugerido = ""
     autor_sugerido = ""
 
     if uploaded:
-        st.image(uploaded, caption="Imagen subida", use_column_width=True)
+        # No mostramos la imagen para que no quede visible en la UI
         if st.button("🔎 Detectar título y autor (GPT-4o)"):
             image_bytes = uploaded.read()
             with st.spinner("Analizando imagen con GPT-4o..."):
@@ -205,6 +217,7 @@ with col_ctrl:
                 st.success("Detección completada.")
             else:
                 st.warning("No se detectó título/autor con confianza.")
+        uploaded = None
 
     titulo = st.text_input("Título (confirmá o edita)", value=titulo_sugerido)
     autor = st.text_input("Autor (confirmá o edita)", value=autor_sugerido)
@@ -227,7 +240,7 @@ with col_ctrl:
         st.session_state["reading_started"] = False
     if not st.session_state["reading_started"]:
         if st.button("▶️ Iniciar lectura"):
-            if "start_coords" not in st.session_state:
+            if "start_coords" not in st.session_state or st.session_state["start_coords"] is None:
                 st.error("Primero capturá la ubicación de inicio con 'Capturar ubicación inicio'.")
             elif titulo.strip() == "":
                 st.error("Por favor ingresá o detectá el título del libro antes de iniciar.")
@@ -373,4 +386,4 @@ with col_ctrl:
                     st.components.v1.html(f'<iframe width="100%" height="220" src="{directions_url}" style="border:0"></iframe>', height=220)
             st.markdown("---")
     else:
-        st.info("Aún no hay registros.")
+        st.info("Aún no hay registros
