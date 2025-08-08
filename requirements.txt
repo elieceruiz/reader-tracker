@@ -3,3 +3,4 @@ pymongo
 openai
 pytz
 requests
+streamlit-autorefresh
