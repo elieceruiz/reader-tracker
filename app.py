@@ -4,7 +4,6 @@ import pytz
 from pymongo import MongoClient
 import base64
 import json
-import openai
 
 # === CONFIGURACIÓN ===
 st.set_page_config(page_title="Reader Tracker", layout="wide")
@@ -12,10 +11,7 @@ st.title("Reader Tracker")
 
 # === SECRETS ===
 mongo_uri = st.secrets.get("mongo_uri")
-openai_api_key = st.secrets.get("openai_api_key")
 google_maps_api_key = st.secrets.get("google_maps_api_key")
-
-openai.api_key = openai_api_key
 
 # === CONEXIONES ===
 client = MongoClient(mongo_uri)
@@ -122,31 +118,6 @@ def mostrar_historial(titulo):
             "Distancia": distancia
         })
     st.dataframe(data)
-
-def detectar_titulo_con_openai(imagen_bytes):
-    base64_image = base64.b64encode(imagen_bytes).decode("utf-8")
-    try:
-        st.info("🔍 Enviando imagen a OpenAI para detectar título...")
-        response = openai.ChatCompletion.create(
-            model="gpt-4o",
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": "¿Cuál es el título del texto que aparece en esta imagen? Solo el título, por favor."},
-                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}},
-                    ],
-                }
-            ],
-            max_tokens=50,
-        )
-        titulo = response.choices[0].message.content.strip()
-        st.success(f"✅ Título detectado: {titulo}")
-        st.text_area("DEBUG: Respuesta completa OpenAI", value=json.dumps(response, indent=2), height=200)
-        return titulo
-    except Exception as e:
-        st.error(f"❌ Error llamando a OpenAI: {e}")
-        return None
 
 def render_map_con_dibujo(api_key):
     from streamlit.components.v1 import html
@@ -268,14 +239,14 @@ if mensaje_js and isinstance(mensaje_js, dict) and "type" in mensaje_js and mens
         )
     st.success(f"Ruta guardada. Distancia total: {distancia_total:.2f} km")
     finalizar_lectura()
-    st.rerun()
+    st.experimental_rerun()
 
 # === SELECCIÓN DE MÓDULO ===
 seccion = st.selectbox(
     "Selecciona una sección:",
     [
         "Tiempo de desarrollo",
-        "Lectura con OpenAI y Cronómetro",
+        "Lectura con Cronómetro",
         "Mapa en vivo",
         "Historial de lecturas"
     ]
@@ -301,7 +272,7 @@ if seccion == "Tiempo de desarrollo":
                 {"$set": {"fin": datetime.now(tz), "duracion_segundos": segundos_transcurridos}}
             )
             st.success(f"✅ Desarrollo finalizado. Duración: {duracion}")
-            st.rerun()
+            st.experimental_rerun()
 
     else:
         if st.button("🟢 Iniciar desarrollo"):
@@ -310,32 +281,29 @@ if seccion == "Tiempo de desarrollo":
                 "fin": None,
                 "duracion_segundos": None
             })
-            st.rerun()
+            st.experimental_rerun()
 
-# --- MÓDULO 2: Lectura con OpenAI y Cronómetro ---
-elif seccion == "Lectura con OpenAI y Cronómetro":
-    st.header("Lectura con OpenAI y Cronómetro")
+# --- MÓDULO 2: Lectura con Cronómetro ---
+elif seccion == "Lectura con Cronómetro":
+    st.header("Lectura con Cronómetro")
 
-    # 1. Cargar foto y detectar título (solo si no hay título en sesión)
+    # Ingresar título manualmente
     if not st.session_state["lectura_titulo"]:
-        imagen = st.file_uploader("Sube foto portada o parcial del texto (JPG/PNG obligatorio):", type=["jpg", "jpeg", "png"])
-        if imagen:
-            bytes_img = imagen.read()
-            st.session_state["foto_base64"] = base64.b64encode(bytes_img).decode("utf-8")
-            with st.spinner("Procesando imagen con OpenAI..."):
-                titulo = detectar_titulo_con_openai(bytes_img)
-            if titulo:
-                st.session_state["lectura_titulo"] = titulo
-            else:
-                st.error("No se pudo detectar el título. Intenta con una imagen más clara o prueba luego.")
-            # Preguntar páginas
-            paginas_input = st.number_input("Ingresa número total de páginas del texto:", min_value=1, step=1)
-            if paginas_input > 0:
-                st.session_state["lectura_paginas"] = paginas_input
+        titulo_manual = st.text_input("Ingresa manualmente el título del texto:")
+        if titulo_manual:
+            st.session_state["lectura_titulo"] = titulo_manual
 
-    else:
-        st.markdown(f"**Título detectado:** {st.session_state['lectura_titulo']}")
+    # Páginas totales
+    if st.session_state["lectura_titulo"] and not st.session_state["lectura_paginas"]:
+        paginas_input = st.number_input("Ingresa número total de páginas del texto:", min_value=1, step=1)
+        if paginas_input > 0:
+            st.session_state["lectura_paginas"] = paginas_input
+
+    # Mostrar datos y controles de lectura
+    if st.session_state["lectura_titulo"] and st.session_state["lectura_paginas"]:
+        st.markdown(f"**Título:** {st.session_state['lectura_titulo']}")
         st.markdown(f"**Páginas totales:** {st.session_state['lectura_paginas']}")
+
         if not st.session_state["lectura_en_curso"]:
             if st.button("▶️ Iniciar lectura"):
                 st.session_state["lectura_inicio"] = datetime.now(tz)
@@ -343,19 +311,17 @@ elif seccion == "Lectura con OpenAI y Cronómetro":
                 st.session_state["cronometro_running"] = True
                 st.session_state["cronometro_segundos"] = 0
                 iniciar_lectura(st.session_state["lectura_titulo"], st.session_state["lectura_paginas"], st.session_state["foto_base64"])
-                st.rerun()
+                st.experimental_rerun()
         else:
             st.markdown("### Lectura en curso...")
-            # Mostrar cronómetro
+
             if st.session_state["cronometro_running"]:
                 st.markdown(f"⏰ Tiempo transcurrido: {timedelta(seconds=st.session_state['cronometro_segundos'])}")
                 st.session_state["cronometro_segundos"] += 1
-                st.experimental_rerun = None  # solo para que no esté más ahí, no se usa
-                st.rerun()
+                st.experimental_rerun()
             else:
                 st.markdown(f"⏰ Tiempo detenido: {timedelta(seconds=st.session_state['cronometro_segundos'])}")
 
-            # Control páginas
             pagina = st.number_input(
                 "Página actual:",
                 min_value=1,
@@ -375,7 +341,7 @@ elif seccion == "Lectura con OpenAI y Cronómetro":
             if st.button("⏹️ Finalizar lectura"):
                 finalizar_lectura()
                 st.success("Lectura finalizada y guardada.")
-                st.rerun()
+                st.experimental_rerun()
 
 # --- MÓDULO 3: Mapa en vivo ---
 elif seccion == "Mapa en vivo":
