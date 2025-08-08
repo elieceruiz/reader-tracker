@@ -5,33 +5,33 @@ from pymongo import MongoClient
 import base64
 import json
 import openai
-from streamlit.components.v1 import html
-from math import radians, cos, sin, asin, sqrt
 
-# --- Configuración inicial ---
+# === CONFIGURACIÓN ===
 st.set_page_config(page_title="Reader Tracker", layout="wide")
 st.title("Reader Tracker")
 
-# --- Secrets (configura en streamlit secrets) ---
-mongo_uri = st.secrets["mongo_uri"]
-openai_api_key = st.secrets["openai_api_key"]
-google_maps_api_key = st.secrets.get("google_maps_api_key", "")
+# === SECRETS ===
+mongo_uri = st.secrets.get("mongo_uri")
+openai_api_key = st.secrets.get("openai_api_key")
+google_maps_api_key = st.secrets.get("google_maps_api_key")
 
 openai.api_key = openai_api_key
 
-# --- Conexión MongoDB ---
+# === CONEXIONES ===
 client = MongoClient(mongo_uri)
 db = client["reader_tracker"]
 dev_col = db["dev_tracker"]
 
-# --- Zona horaria ---
+# === ZONA HORARIA ===
 tz = pytz.timezone("America/Bogota")
+
 def to_datetime_local(dt):
     if not isinstance(dt, datetime):
-        dt = datetime.fromisoformat(dt)
+        from dateutil.parser import parse
+        dt = parse(dt)
     return dt.astimezone(tz)
 
-# --- Estado sesión default ---
+# === SESIÓN ESTADO BASE ===
 for key, default in {
     "dev_start": None,
     "lectura_titulo": None,
@@ -45,12 +45,16 @@ for key, default in {
     "cronometro_segundos": 0,
     "cronometro_running": False,
     "lectura_id": None,
-    "openai_response_raw": None,
 }.items():
     if key not in st.session_state:
         st.session_state[key] = default
 
-# --- Funciones ---
+# === REFRESCO AUTOMÁTICO PARA CRONÓMETRO ===
+from streamlit_autorefresh import st_autorefresh
+st_autorefresh(interval=1000, key="cronometro_refresh")
+
+# === FUNCIONES ===
+
 def coleccion_por_titulo(titulo):
     nombre = titulo.lower().replace(" ", "_")
     return db[nombre]
@@ -90,11 +94,10 @@ def finalizar_lectura():
         {"_id": st.session_state["lectura_id"]},
         {"$set": {"fin": datetime.now(tz)}},
     )
-    # Reset estados lectura
     for key in ["lectura_titulo", "lectura_paginas", "lectura_pagina_actual",
                 "lectura_inicio", "lectura_en_curso", "ruta_actual",
                 "ruta_distancia_km", "foto_base64", "cronometro_segundos",
-                "cronometro_running", "lectura_id", "openai_response_raw"]:
+                "cronometro_running", "lectura_id"]:
         st.session_state[key] = None if key != "lectura_pagina_actual" else 0
 
 def mostrar_historial(titulo):
@@ -120,20 +123,38 @@ def mostrar_historial(titulo):
         })
     st.dataframe(data)
 
-def haversine(lat1, lon1, lat2, lon2):
-    R = 6371
-    dlat = radians(lat2 - lat1)
-    dlon = radians(lon2 - lon1)
-    a = sin(dlat/2)**2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlon/2)**2
-    c = 2 * asin(sqrt(a))
-    return R * c
+def detectar_titulo_con_openai(imagen_bytes):
+    base64_image = base64.b64encode(imagen_bytes).decode("utf-8")
+    try:
+        st.info("🔍 Enviando imagen a OpenAI para detectar título...")
+        response = openai.ChatCompletion.create(
+            model="gpt-4o",
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "¿Cuál es el título del texto que aparece en esta imagen? Solo el título, por favor."},
+                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}},
+                    ],
+                }
+            ],
+            max_tokens=50,
+        )
+        titulo = response.choices[0].message.content.strip()
+        st.success(f"✅ Título detectado: {titulo}")
+        st.text_area("DEBUG: Respuesta completa OpenAI", value=json.dumps(response, indent=2), height=200)
+        return titulo
+    except Exception as e:
+        st.error(f"❌ Error llamando a OpenAI: {e}")
+        return None
 
 def render_map_con_dibujo(api_key):
+    from streamlit.components.v1 import html
     html_code = f"""
     <!DOCTYPE html>
     <html>
     <head>
-        <style>html, body, #map {{ height: 100%; margin: 0; padding: 0; }}</style>
+        <style> html, body, #map {{ height: 100%; margin: 0; padding: 0; }} </style>
         <script src="https://maps.googleapis.com/maps/api/js?key={api_key}&libraries=geometry"></script>
     </head>
     <body>
@@ -210,42 +231,34 @@ def render_map_con_dibujo(api_key):
     """
     html(html_code, height=600)
 
-def detectar_titulo_con_openai(imagen_bytes):
-    base64_image = base64.b64encode(imagen_bytes).decode("utf-8")
-    try:
-        with st.spinner("Procesando imagen con OpenAI para detectar título..."):
-            response = openai.ChatCompletion.create(
-                model="gpt-4o",
-                messages=[
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": "¿Cuál es el título del texto que aparece en esta imagen? Solo el título, por favor."},
-                            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
-                        ]
-                    }
-                ],
-                max_tokens=50,
-            )
-        st.session_state["openai_response_raw"] = response.to_dict()
-        titulo = response.choices[0].message.content.strip()
-        return titulo
-    except Exception as e:
-        st.error(f"Error llamando a OpenAI: {e}")
-        return None
+# Escuchar mensaje JS (ruta dibujada)
+try:
+    from streamlit_js_eval import streamlit_js_eval
+    mensaje_js = streamlit_js_eval(js="window.addEventListener('message', (event) => {return event.data});", key="js_eval_listener")
+except ImportError:
+    mensaje_js = None
+    st.warning("Módulo 'streamlit_js_eval' no instalado: no se podrá recibir ruta desde mapa.")
 
-# --- JS escucha ruta dibujada ---
-from streamlit_js_eval import streamlit_js_eval
-mensaje_js = streamlit_js_eval(js="window.addEventListener('message', (event) => {return event.data});", key="js_eval_listener")
-
-if mensaje_js and isinstance(mensaje_js, dict) and mensaje_js.get("type") == "guardar_ruta":
+if mensaje_js and isinstance(mensaje_js, dict) and "type" in mensaje_js and mensaje_js["type"] == "guardar_ruta":
     ruta = json.loads(mensaje_js["ruta"])
     st.session_state["ruta_actual"] = ruta
+
+    # Calcular distancia total con fórmula Haversine
+    from math import radians, cos, sin, asin, sqrt
+    def haversine(lat1, lon1, lat2, lon2):
+        R = 6371  # km
+        dlat = radians(lat2 - lat1)
+        dlon = radians(lon2 - lon1)
+        a = sin(dlat / 2) ** 2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlon / 2) ** 2
+        c = 2 * asin(sqrt(a))
+        return R * c
+
     distancia_total = 0
     for i in range(len(ruta) - 1):
         p1 = ruta[i]
         p2 = ruta[i + 1]
         distancia_total += haversine(p1["lat"], p1["lng"], p2["lat"], p2["lng"])
+
     st.session_state["ruta_distancia_km"] = distancia_total
     if st.session_state["lectura_en_curso"]:
         actualizar_lectura(
@@ -255,16 +268,21 @@ if mensaje_js and isinstance(mensaje_js, dict) and mensaje_js.get("type") == "gu
         )
     st.success(f"Ruta guardada. Distancia total: {distancia_total:.2f} km")
     finalizar_lectura()
+    st.rerun()
 
-# --- Módulos ---
-menu = st.selectbox("Selecciona una sección:", [
-    "Tiempo de desarrollo",
-    "Lectura y Cronómetro con OpenAI OCR",
-    "Mapa en vivo",
-    "Historial de lecturas"
-])
+# === SELECCIÓN DE MÓDULO ===
+seccion = st.selectbox(
+    "Selecciona una sección:",
+    [
+        "Tiempo de desarrollo",
+        "Lectura con OpenAI y Cronómetro",
+        "Mapa en vivo",
+        "Historial de lecturas"
+    ]
+)
 
-if menu == "Tiempo de desarrollo":
+# --- MÓDULO 1: Tiempo de desarrollo ---
+if seccion == "Tiempo de desarrollo":
     st.header("Tiempo dedicado al desarrollo")
 
     sesion_activa = dev_col.find_one({"fin": None})
@@ -283,7 +301,7 @@ if menu == "Tiempo de desarrollo":
                 {"$set": {"fin": datetime.now(tz), "duracion_segundos": segundos_transcurridos}}
             )
             st.success(f"✅ Desarrollo finalizado. Duración: {duracion}")
-            st.experimental_rerun()
+            st.rerun()
 
     else:
         if st.button("🟢 Iniciar desarrollo"):
@@ -292,43 +310,84 @@ if menu == "Tiempo de desarrollo":
                 "fin": None,
                 "duracion_segundos": None
             })
-            st.experimental_rerun()
+            st.rerun()
 
-elif menu == "Lectura y Cronómetro con OpenAI OCR":
-    st.header("Lectura y Cronómetro")
+# --- MÓDULO 2: Lectura con OpenAI y Cronómetro ---
+elif seccion == "Lectura con OpenAI y Cronómetro":
+    st.header("Lectura con OpenAI y Cronómetro")
 
-    # Subir imagen y detectar título si no está
+    # 1. Cargar foto y detectar título (solo si no hay título en sesión)
     if not st.session_state["lectura_titulo"]:
         imagen = st.file_uploader("Sube foto portada o parcial del texto (JPG/PNG obligatorio):", type=["jpg", "jpeg", "png"])
         if imagen:
             bytes_img = imagen.read()
             st.session_state["foto_base64"] = base64.b64encode(bytes_img).decode("utf-8")
-            titulo = detectar_titulo_con_openai(bytes_img)
+            with st.spinner("Procesando imagen con OpenAI..."):
+                titulo = detectar_titulo_con_openai(bytes_img)
             if titulo:
                 st.session_state["lectura_titulo"] = titulo
-                st.success(f"Título detectado: {titulo}")
             else:
                 st.error("No se pudo detectar el título. Intenta con una imagen más clara o prueba luego.")
-
-            # Mostrar debug raw
-            if st.session_state["openai_response_raw"]:
-                with st.expander("Mostrar respuesta completa OpenAI (debug)"):
-                    st.json(st.session_state["openai_response_raw"])
-
-            if titulo:
-                col = coleccion_por_titulo(titulo)
-                info = col.find_one({})
-                if info and info.get("paginas_totales"):
-                    st.session_state["lectura_paginas"] = info["paginas_totales"]
-                else:
-                    paginas_input = st.number_input("Ingresa número total de páginas del texto:", min_value=1, step=1)
-                    if paginas_input > 0:
-                        st.session_state["lectura_paginas"] = paginas_input
+            # Preguntar páginas
+            paginas_input = st.number_input("Ingresa número total de páginas del texto:", min_value=1, step=1)
+            if paginas_input > 0:
+                st.session_state["lectura_paginas"] = paginas_input
 
     else:
-        st.markdown(f"### Texto: **{st.session_state['lectura_titulo']}**")
-        st.markdown(f"Total páginas: **{st.session_state['lectura_paginas']}**")
+        st.markdown(f"**Título detectado:** {st.session_state['lectura_titulo']}")
+        st.markdown(f"**Páginas totales:** {st.session_state['lectura_paginas']}")
+        if not st.session_state["lectura_en_curso"]:
+            if st.button("▶️ Iniciar lectura"):
+                st.session_state["lectura_inicio"] = datetime.now(tz)
+                st.session_state["lectura_en_curso"] = True
+                st.session_state["cronometro_running"] = True
+                st.session_state["cronometro_segundos"] = 0
+                iniciar_lectura(st.session_state["lectura_titulo"], st.session_state["lectura_paginas"], st.session_state["foto_base64"])
+                st.rerun()
+        else:
+            st.markdown("### Lectura en curso...")
+            # Mostrar cronómetro
+            if st.session_state["cronometro_running"]:
+                st.markdown(f"⏰ Tiempo transcurrido: {timedelta(seconds=st.session_state['cronometro_segundos'])}")
+                st.session_state["cronometro_segundos"] += 1
+                st.experimental_rerun = None  # solo para que no esté más ahí, no se usa
+                st.rerun()
+            else:
+                st.markdown(f"⏰ Tiempo detenido: {timedelta(seconds=st.session_state['cronometro_segundos'])}")
 
-    # Botón iniciar lectura
-    if not st.session_state["lectura_en_curso"] and st.session_state["lectura_titulo"] and st.session_state["lectura_paginas"]:
-       
+            # Control páginas
+            pagina = st.number_input(
+                "Página actual:",
+                min_value=1,
+                max_value=st.session_state["lectura_paginas"],
+                value=st.session_state["lectura_pagina_actual"] or 1,
+                step=1,
+            )
+            if pagina != st.session_state["lectura_pagina_actual"]:
+                st.session_state["lectura_pagina_actual"] = pagina
+                actualizar_lectura(pagina, st.session_state["ruta_actual"], st.session_state["ruta_distancia_km"])
+
+            if st.button("⏸️ Pausar cronómetro"):
+                st.session_state["cronometro_running"] = False
+            if st.button("▶️ Reanudar cronómetro"):
+                st.session_state["cronometro_running"] = True
+
+            if st.button("⏹️ Finalizar lectura"):
+                finalizar_lectura()
+                st.success("Lectura finalizada y guardada.")
+                st.rerun()
+
+# --- MÓDULO 3: Mapa en vivo ---
+elif seccion == "Mapa en vivo":
+    st.header("Mapa para registrar ruta en tiempo real")
+    render_map_con_dibujo(google_maps_api_key)
+    if st.session_state["ruta_actual"]:
+        st.markdown(f"Ruta guardada con {len(st.session_state['ruta_actual'])} puntos.")
+        st.markdown(f"Distancia total: {st.session_state['ruta_distancia_km']:.2f} km")
+
+# --- MÓDULO 4: Historial ---
+elif seccion == "Historial de lecturas":
+    st.header("Historial de lecturas por título")
+    titulo_hist = st.text_input("Ingresa el título para consultar historial:")
+    if titulo_hist:
+        mostrar_historial(titulo_hist)
