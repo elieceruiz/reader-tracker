@@ -11,6 +11,7 @@ openai
 
 # Live JS bridge
 streamlit-javascript
+streamlit-js-eval
 
 # Utilidades
 requests
