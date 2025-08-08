@@ -4,3 +4,4 @@ openai
 pytz
 python-dateutil
 streamlit-autorefresh
+streamlit-js-eval
