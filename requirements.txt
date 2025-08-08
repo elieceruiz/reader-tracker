@@ -1,5 +1,6 @@
 streamlit
 pymongo
 openai
-streamlit-js-eval
 pytz
+python-dateutil
+streamlit-js-eval
