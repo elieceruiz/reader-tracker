@@ -72,26 +72,41 @@ seccion = st.selectbox(
 
 # ------------------ MÓDULO 1: Tiempo de desarrollo ------------------
 
-if seccion == "Tiempo de desarrollo":
-    st.header("⏱️ Tiempo dedicado al desarrollo")
+if seccion == "1. Tiempo de desarrollo":
+    st.header("Tiempo dedicado al desarrollo")
 
-    # Recarga automática cada 1 segundo para que el cronómetro avance
-    st_autorefresh(interval=1000, limit=None, key="dev_autorefresh")
+    # Buscar en BD si hay sesión activa
+    sesion_activa = db.dev_sessions.find_one({"fin": None})
 
-    if st.session_state["dev_start"] is None:
-        if st.button("🟢 Iniciar desarrollo"):
-            iniciar_desarrollo()
+    if sesion_activa:
+        # Hay sesión activa, tomar inicio y mostrar cronómetro
+        start_time = sesion_activa["inicio"].astimezone(tz) if hasattr(sesion_activa["inicio"], "astimezone") else to_datetime_local(sesion_activa["inicio"])
+        segundos_transcurridos = int((datetime.now(tz) - start_time).total_seconds())
+        st.success(f"🧠 Desarrollo en curso desde las {start_time.strftime('%H:%M:%S')}")
+
+        cronometro = st.empty()
+        stop_button = st.button("⏹️ Finalizar desarrollo")
+
+        if stop_button:
+            duracion = str(timedelta(seconds=segundos_transcurridos))
+            db.dev_sessions.update_one({"_id": sesion_activa["_id"]}, {"$set": {"fin": datetime.now(tz), "duracion_segundos": segundos_transcurridos}})
+            st.success(f"✅ Desarrollo finalizado. Duración: {duracion}")
             st.experimental_rerun()
+        else:
+            for i in range(segundos_transcurridos, segundos_transcurridos + 100000):
+                duracion = str(timedelta(seconds=i))
+                cronometro.markdown(f"### ⏱️ Duración: {duracion}")
+                time.sleep(1)
     else:
-        # Mostrar cronómetro en marcha
-        inicio = st.session_state["dev_start"]
-        elapsed = datetime.now(tz) - inicio
-        st.success(f"🧠 Desarrollo en curso desde las {inicio.strftime('%H:%M:%S')}")
-        st.markdown(f"### ⏱️ Tiempo transcurrido: {str(elapsed).split('.')[0]}")
-
-        if st.button("⏹️ Finalizar desarrollo"):
-            finalizar_desarrollo()
-            st.experimental_rerun()
+        # No hay sesión activa
+        if st.button("🟢 Iniciar desarrollo"):
+            # Insertar nueva sesión con fin=None para marcar como activa
+            db.dev_sessions.insert_one({
+                "inicio": datetime.now(tz),
+                "fin": None,
+                "duracion_segundos": None
+            })
+            st.rerun()
 
 # ------------------ MÓDULO 2: GPT-4o y Cronómetro ------------------
 
