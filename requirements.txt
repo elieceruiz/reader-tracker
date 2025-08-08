@@ -1,7 +1,7 @@
 streamlit
-pymongo
+pymongo[srv]
+openai
 pytz
-python-dateutil
-requests
 streamlit-autorefresh
 streamlit-js-eval
+python-dateutil
