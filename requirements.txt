@@ -1,4 +1,5 @@
 streamlit
 pymongo
-geopy
+openai
 requests
+geopy
