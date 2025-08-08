@@ -2,54 +2,53 @@ import streamlit as st
 import time
 import base64
 import json
-from datetime import datetime
-import pytz
-import pymongo
 import math
-import openai
+from datetime import datetime
 import requests
+import pymongo
+import geopy.distance
 from streamlit_js_eval import streamlit_js_eval
-import streamlit.components.v1 as components
+from streamlit.components.v1 import html
 
-# Configuración página
-st.set_page_config(page_title="📚 Reader Tracker Completo", layout="wide")
+# ---------------- CONFIG ----------------
+st.set_page_config(page_title="Reader Tracker (dinámico)", layout="wide")
 
 # Secrets (minúsculas)
-MONGO_URI = st.secrets.get("mongo_uri")
-GOOGLE_MAPS_API_KEY = st.secrets.get("google_maps_api_key")
-OPENAI_API_KEY = st.secrets.get("openai_api_key")
-OPENAI_ORG_ID = st.secrets.get("openai_org_id")
+mongo_uri = st.secrets.get("mongo_uri")
+google_maps_api_key = st.secrets.get("google_maps_api_key")
+openai_api_key = st.secrets.get("openai_api_key")
 
-# Inicializar OpenAI
-openai.api_key = OPENAI_API_KEY
-if OPENAI_ORG_ID:
-    openai.organization = OPENAI_ORG_ID
+if not google_maps_api_key:
+    st.error("Agrega google_maps_api_key en tus secrets para que funcione el mapa.")
+if not openai_api_key:
+    st.error("Agrega openai_api_key en tus secrets para que funcione OpenAI.")
 
-# Conexión MongoDB
 mongo_collection_lecturas = None
 mongo_collection_libros = None
-if MONGO_URI:
+if mongo_uri:
     try:
-        client = pymongo.MongoClient(MONGO_URI)
+        client = pymongo.MongoClient(mongo_uri)
         db = client["reader_tracker"]
         mongo_collection_lecturas = db["lecturas"]
         mongo_collection_libros = db["libros"]
     except Exception as e:
         st.warning(f"No se pudo conectar a MongoDB: {e}")
 
-# Función para calcular distancia Haversine en km
+# ---------------- UTILIDADES ----------------
 def haversine_km(lat1, lon1, lat2, lon2):
+    """Distancia en km entre dos coordenadas (Haversine)."""
     R = 6371.0
     phi1 = math.radians(lat1)
     phi2 = math.radians(lat2)
     dphi = math.radians(lat2 - lat1)
     dlambda = math.radians(lon2 - lon1)
-    a = math.sin(dphi/2)**2 + math.cos(phi1)*math.cos(phi2)*math.sin(dlambda/2)**2
-    c = 2*math.atan2(math.sqrt(a), math.sqrt(1-a))
-    return R*c
+    a = math.sin(dphi/2)**2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda/2)**2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
+    return R * c
 
-# OpenAI GPT-4o extractor título y autor (JSON solo)
 def openai_extract_title_author(image_bytes):
+    import openai
+    openai.api_key = openai_api_key
     data_uri = "data:image/jpeg;base64," + base64.b64encode(image_bytes).decode("utf-8")
     system_prompt = (
         "Eres un extractor que devuelves SOLO JSON con claves 'titulo' y 'autor'. "
@@ -83,276 +82,295 @@ def openai_extract_title_author(image_bytes):
             except Exception:
                 return text.replace("\n"," ").strip(), ""
     except Exception as e:
-        st.warning(f"Error OpenAI: {e}")
+        st.warning(f"Error al llamar a OpenAI: {e}")
         return "", ""
 
-# HTML+JS para mapa con watchPosition cada 5s y línea + distancia
-def render_live_map(api_key):
-    return f"""
-    <div id="map" style="height:450px; width:100%;"></div>
-    <div id="status" style="margin-top:8px; font-weight:bold;"></div>
-    <button onclick="stopTracking()" style="margin-top:10px; padding:8px;">⏹ Parar y enviar datos</button>
+def render_live_map(api_key, height=420):
+    html_code = f"""
+    <!doctype html>
+    <html>
+      <head>
+        <meta name="viewport" content="initial-scale=1.0, width=device-width" />
+        <style> html, body, #map {{ height: 100%; margin:0; padding:0 }} </style>
+        <script src="https://maps.googleapis.com/maps/api/js?key={api_key}&libraries=geometry"></script>
+      </head>
+      <body>
+        <div id="map"></div>
+        <script>
+          let map;
+          let marker;
+          let poly;
+          let path = [];
 
-    <script>
-    let map;
-    let marker;
-    let pathCoords = [];
-    let polyline;
-    let watchId;
-    let totalDistance = 0;
-
-    function initMap() {{
-        map = new google.maps.Map(document.getElementById('map'), {{
-            zoom: 17,
-            center: {{ lat: 0, lng: 0 }}
-        }});
-        polyline = new google.maps.Polyline({{
-            map: map,
-            path: [],
-            geodesic: true,
-            strokeColor: '#1E90FF',
-            strokeOpacity: 0.8,
-            strokeWeight: 4
-        }});
-
-        if (!navigator.geolocation) {{
-            document.getElementById('status').innerText = "⚠️ Geolocalización no soportada.";
-            return;
-        }}
-
-        watchId = navigator.geolocation.watchPosition(
-            updatePosition,
-            (err) => {{
-                document.getElementById('status').innerText = "❌ Error: " + err.message;
-            }},
-            {{
-                enableHighAccuracy: true,
-                maximumAge: 0,
-                timeout: 10000
-            }}
-        );
-    }}
-
-    function updatePosition(position) {{
-        let lat = position.coords.latitude;
-        let lng = position.coords.longitude;
-        let currentPos = new google.maps.LatLng(lat, lng);
-
-        if (pathCoords.length > 0) {{
-            totalDistance += google.maps.geometry.spherical.computeDistanceBetween(
-                pathCoords[pathCoords.length - 1],
-                currentPos
-            );
-        }}
-
-        pathCoords.push(currentPos);
-        polyline.setPath(pathCoords);
-
-        if (!marker) {{
-            marker = new google.maps.Marker({{
-                position: currentPos,
-                map: map,
-                title: "Ubicación actual"
+          function initMap() {{
+            map = new google.maps.Map(document.getElementById('map'), {{
+              zoom: 17,
+              center: {{lat:0, lng:0}},
+              mapTypeId: 'roadmap'
             }});
-            map.setCenter(currentPos);
-        }} else {{
-            marker.setPosition(currentPos);
-        }}
+            marker = new google.maps.Marker({{ map: map, position: {{lat:0, lng:0}}, title: "Tú" }});
+            poly = new google.maps.Polyline({{
+              strokeColor: '#FF0000',
+              strokeOpacity: 1.0,
+              strokeWeight: 3,
+              path: path
+            }});
+            poly.setMap(map);
+          }}
 
-        document.getElementById('status').innerText = 
-            "📍 Última posición: " + lat.toFixed(5) + ", " + lng.toFixed(5) +
-            " | Distancia total: " + (totalDistance/1000).toFixed(3) + " km";
-    }}
+          function updatePosition(pos) {{
+            const lat = pos.coords.latitude;
+            const lng = pos.coords.longitude;
+            const latlng = new google.maps.LatLng(lat, lng);
+            marker.setPosition(latlng);
+            map.setCenter(latlng);
+            path.push(latlng);
+            poly.setPath(path);
+          }}
 
-    function stopTracking() {{
-        if (watchId) {{
-            navigator.geolocation.clearWatch(watchId);
-        }}
-        let coordsToSend = pathCoords.map(p => [p.lat(), p.lng()]);
-        let payload = {{
-            coords: coordsToSend,
-            distance_km: (totalDistance/1000).toFixed(3)
-        }};
-        window.parent.postMessage({{isStreamlitMessage: true, type: "TRACK_DATA", data: payload}}, "*");
-    }}
+          function handleError(err) {{
+            console.error('Geolocation error', err);
+          }}
 
-    function gm_authFailure() {{
-        document.getElementById('status').innerText = "❌ Error de autenticación con Google Maps API.";
-    }}
-    </script>
-    <script async defer
-        src="https://maps.googleapis.com/maps/api/js?key={api_key}&libraries=geometry&callback=initMap">
-    </script>
+          if (navigator.geolocation) {{
+            navigator.geolocation.getCurrentPosition(
+              function(p) {{
+                initMap();
+                updatePosition(p);
+                navigator.geolocation.watchPosition(updatePosition, handleError, {{ enableHighAccuracy: true, maximumAge: 1000, timeout: 10000 }});
+              }},
+              function(e) {{
+                initMap();
+                console.error('Error getCurrentPosition', e);
+              }},
+              {{ enableHighAccuracy: true, maximumAge: 1000, timeout: 10000 }}
+            );
+          }} else {{
+            initMap();
+            console.error('Navegador no soporta geolocalización');
+          }}
+        </script>
+      </body>
+    </html>
     """
+    html(html_code, height=height)
 
-# Cronómetro simple que corre al segundo (usa session_state)
-def cronometro():
-    if "start_time" not in st.session_state:
-        st.session_state.start_time = None
-    if "running" not in st.session_state:
-        st.session_state.running = False
+# ---------------- UI & FLUJO ----------------
+st.title("📚 Reader Tracker — Mapa dinámico + GPT-4o (título y autor)")
 
-    col1, col2 = st.columns(2)
-    with col1:
-        if not st.session_state.running:
-            if st.button("▶️ Iniciar lectura"):
-                st.session_state.start_time = time.time()
-                st.session_state.running = True
-        else:
-            elapsed = int(time.time() - st.session_state.start_time)
-            hh = elapsed // 3600
-            mm = (elapsed % 3600) // 60
-            ss = elapsed % 60
-            st.metric("⏳ Tiempo de lectura", f"{hh:02d}:{mm:02d}:{ss:02d}")
-
-    with col2:
-        if st.session_state.running:
-            if st.button("⏹ Detener lectura"):
-                st.session_state.running = False
-                return True
-    return False
-
-# --------- APP UI ---------
-st.title("📚 Reader Tracker Completo")
-
-col_map, col_ctrl = st.columns([2,1])
+col_map, col_ctrl = st.columns((2,1))
 
 with col_map:
-    st.subheader("Mapa en vivo con ruta (actualiza cada 5s)")
-    map_component = components.html(render_live_map(GOOGLE_MAPS_API_KEY), height=520)
+    st.subheader("Mapa en vivo (permite seguimiento del movimiento del celu)")
+    if google_maps_api_key:
+        render_live_map(google_maps_api_key, height=520)
+    else:
+        st.info("Añadí google_maps_api_key en st.secrets para ver el mapa dinámico.")
 
 with col_ctrl:
-    st.subheader("Control de lectura")
+    st.subheader("Controles")
 
-    # 1. Subir portada y extraer título y autor
-    uploaded_file = st.file_uploader("📸 Foto portada o página", type=["jpg","jpeg","png"])
-    titulo_extraido, autor_extraido = "", ""
-    if uploaded_file:
-        st.image(uploaded_file, caption="Portada subida", use_column_width=True)
-        if st.button("🔎 Detectar título y autor con GPT-4o"):
-            bytes_im = uploaded_file.read()
-            titulo_extraido, autor_extraido = openai_extract_title_author(bytes_im)
-            st.success(f"Detectado título: {titulo_extraido}")
-            st.success(f"Detectado autor: {autor_extraido}")
-
-    # 2. Campos título y autor (editable)
-    titulo = st.text_input("Título del libro", value=titulo_extraido)
-    autor = st.text_input("Autor del libro", value=autor_extraido)
-
-    # 3. Consultar Mongo si ya hay total páginas para este libro
-    paginas_totales = None
-    if titulo.strip():
-        libro_db = mongo_collection_libros.find_one({"titulo": {"$regex": f"^{titulo.strip()}$", "$options":"i"}}) if mongo_collection_libros else None
-        if libro_db and "paginas_totales" in libro_db:
-            paginas_totales = libro_db["paginas_totales"]
-            st.info(f"Libro ya registrado con {paginas_totales} páginas.")
+    st.markdown("**1)** Capturar ubicación de inicio (botón). Esto toma una lectura puntual del navegador y la guarda como inicio.")
+    if st.button("📍 Capturar ubicación inicio"):
+        js_getpos = """
+        new Promise((resolve) => {
+          if (!navigator.geolocation) { resolve(null); return; }
+          navigator.geolocation.getCurrentPosition(
+            (pos) => resolve({latitude: pos.coords.latitude, longitude: pos.coords.longitude}),
+            (err) => resolve(null),
+            {enableHighAccuracy: true, timeout:10000}
+          );
+        })
+        """
+        coords = streamlit_js_eval(js_expressions=js_getpos, key="getpos_start")
+        if coords:
+            st.session_state["start_coords"] = (float(coords["latitude"]), float(coords["longitude"]))
+            st.success(f"Ubicación inicio capturada: {st.session_state['start_coords']}")
         else:
-            paginas_totales = st.number_input("Número total de páginas (no encontrado en DB)", min_value=1, step=1)
+            st.error("No se pudo obtener la ubicación desde el navegador. Asegurate de dar permiso.")
 
-    # 4. Páginas leídas
-    pagina_inicio = st.number_input("Página inicio", min_value=1, max_value=paginas_totales or 9999, step=1, value=1)
-    pagina_fin = st.number_input("Página final", min_value=pagina_inicio, max_value=paginas_totales or 9999, step=1, value=pagina_inicio)
+    st.markdown("---")
+    st.markdown("**2)** Sube la foto de la portada (opcional) y detectá título/autor con GPT-4o.")
+    uploaded = st.file_uploader("Foto (portada o página interior clara)", type=["jpg","jpeg","png"])
+    titulo_sugerido = ""
+    autor_sugerido = ""
 
-    # 5. Resumen / reflexión
-    resumen = st.text_area("¿Qué se te quedó de la lectura?")
-
-    # 6. Cronómetro
-    lectura_parada = cronometro()
-
-    # 7. Recibir datos JS desde el mapa (ruta y distancia)
-    from streamlit_javascript import st_javascript
-    tracking_data = st_javascript("""
-    new Promise((resolve) => {
-        window.addEventListener("message", (event) => {
-            if (event.data && event.data.type === "TRACK_DATA") {
-                resolve(event.data.data);
-            }
-        });
-    })
-    """)
-
-    if lectura_parada:
-        if not tracking_data:
-            st.warning("No se han recibido datos de ubicación desde el navegador.")
-        else:
-            # Guardar registro completo en MongoDB
-            zona_co = pytz.timezone("America/Bogota")
-            now = datetime.now(tz=zona_co)
-
-            paginas_leidas = pagina_fin - pagina_inicio + 1
-            duracion_seg = int(time.time() - st.session_state.start_time)
-
-            registro = {
-                "titulo": titulo.strip(),
-                "autor": autor.strip(),
-                "inicio_ts": now,
-                "duracion_seg": duracion_seg,
-                "paginas_leidas": paginas_leidas,
-                "resumen": resumen.strip(),
-                "ruta": tracking_data.get("coords", []),
-                "distancia_km": float(tracking_data.get("distance_km", 0)),
-                "pagina_inicio": pagina_inicio,
-                "pagina_fin": pagina_fin,
-            }
-
-            # Guardar libro con paginas totales si no existe
-            if mongo_collection_libros:
-                if not libro_db or "paginas_totales" not in libro_db:
-                    mongo_collection_libros.update_one(
-                        {"titulo": titulo.strip()},
-                        {"$set": {"paginas_totales": paginas_totales}},
-                        upsert=True
-                    )
-
-            # Guardar lectura
-            if mongo_collection_lecturas:
-                try:
-                    mongo_collection_lecturas.insert_one(registro)
-                    st.success("✅ Registro guardado en MongoDB.")
-                except Exception as e:
-                    st.error(f"Error guardando en MongoDB: {e}")
+    if uploaded:
+        st.image(uploaded, caption="Imagen subida", use_column_width=True)
+        if st.button("🔎 Detectar título y autor (GPT-4o)"):
+            image_bytes = uploaded.read()
+            with st.spinner("Analizando imagen con GPT-4o..."):
+                t, a = openai_extract_title_author(image_bytes)
+            if t or a:
+                titulo_sugerido = t
+                autor_sugerido = a
+                st.success("Detección completada.")
             else:
-                st.info("No hay conexión a MongoDB, registro no guardado.")
+                st.warning("No se detectó título/autor con confianza.")
 
-            # Limpiar estado
-            st.session_state.start_time = None
-            st.session_state.running = False
+    titulo = st.text_input("Título (confirmá o edita)", value=titulo_sugerido)
+    autor = st.text_input("Autor (confirmá o edita)", value=autor_sugerido)
 
-# Historial - mostrar últimas 10 sesiones
+    # Verificar si libro ya está en DB y pedir número de páginas si no
+    num_paginas = None
+    if titulo.strip() != "" and mongo_collection_libros is not None:
+        libro = mongo_collection_libros.find_one({"titulo": titulo.strip()})
+        if libro:
+            num_paginas = libro.get("num_paginas")
+        else:
+            num_paginas_input = st.number_input("Número total de páginas (libro nuevo)", min_value=1, step=1)
+            if st.button("Guardar libro en DB"):
+                if num_paginas_input > 0:
+                    try:
+                        mongo_collection_libros.insert_one({
+                            "titulo": titulo.strip(),
+                            "autor": autor.strip(),
+                            "num_paginas": int(num_paginas_input)
+                        })
+                        st.success("Libro guardado correctamente.")
+                        num_paginas = int(num_paginas_input)
+                    except Exception as e:
+                        st.warning(f"No se pudo guardar el libro: {e}")
+                else:
+                    st.warning("El número de páginas debe ser mayor que 0.")
+
+    st.markdown("---")
+    st.markdown("**3)** Cronómetro manual — iniciar cuando comiences a leer.")
+    if "reading_started" not in st.session_state:
+        st.session_state["reading_started"] = False
+    if not st.session_state["reading_started"]:
+        if st.button("▶️ Iniciar lectura"):
+            if "start_coords" not in st.session_state:
+                st.error("Primero capturá la ubicación de inicio con 'Capturar ubicación inicio'.")
+            else:
+                st.session_state["reading_started"] = True
+                st.session_state["start_time"] = time.time()
+                st.session_state["titulo"] = titulo
+                st.session_state["autor"] = autor
+                st.success("Cronómetro iniciado.")
+    else:
+        elapsed = int(time.time() - st.session_state["start_time"])
+        hh = elapsed // 3600
+        mm = (elapsed % 3600) // 60
+        ss = elapsed % 60
+        st.metric("Tiempo transcurrido", f"{hh:02d}:{mm:02d}:{ss:02d}")
+
+        if st.button("⏹ Detener lectura"):
+            js_getpos_end = """
+            new Promise((resolve) => {
+              if (!navigator.geolocation) { resolve(null); return; }
+              navigator.geolocation.getCurrentPosition(
+                (pos) => resolve({latitude: pos.coords.latitude, longitude: pos.coords.longitude}),
+                (err) => resolve(null),
+                {enableHighAccuracy: true, timeout:10000}
+              );
+            })
+            """
+            coords_end = streamlit_js_eval(js_expressions=js_getpos_end, key="getpos_end")
+            if not coords_end:
+                st.error("No se pudo obtener ubicación final desde el navegador.")
+            else:
+                end_coords = (float(coords_end["latitude"]), float(coords_end["longitude"]))
+                start_coords = st.session_state["start_coords"]
+                duration_sec = int(time.time() - st.session_state["start_time"])
+                duration_str = f"{duration_sec//3600:02d}:{(duration_sec%3600)//60:02d}:{duration_sec%60:02d}"
+                distancia_km = haversine_km(start_coords[0], start_coords[1], end_coords[0], end_coords[1])
+                modo = "En movimiento" if (distancia_km * 1000) > 10 else "En reposo"
+
+                # Pedir página inicio y página final para cálculo páginas leídas
+                pagina_inicio = st.number_input("Página inicio", min_value=1, max_value=num_paginas if num_paginas else 10000, value=1, step=1, key="pagina_inicio")
+                pagina_fin = st.number_input("Página final", min_value=pagina_inicio, max_value=num_paginas if num_paginas else 10000, value=pagina_inicio, step=1, key="pagina_fin")
+                paginas_leidas = pagina_fin - pagina_inicio
+
+                # Reflexión resumen
+                reflexion = st.text_area("¿Qué se te quedó de la lectura?")
+
+                registro = {
+                    "titulo": st.session_state.get("titulo",""),
+                    "autor": st.session_state.get("autor",""),
+                    "inicio_ts": datetime.utcnow(),
+                    "inicio_coords": {"lat": start_coords[0], "lon": start_coords[1]},
+                    "fin_ts": datetime.utcnow(),
+                    "fin_coords": {"lat": end_coords[0], "lon": end_coords[1]},
+                    "duracion_sec": duration_sec,
+                    "duracion_str": duration_str,
+                    "distancia_km": round(distancia_km, 4),
+                    "modo": modo,
+                    "pagina_inicio": pagina_inicio,
+                    "pagina_fin": pagina_fin,
+                    "paginas_leidas": paginas_leidas,
+                    "reflexion": reflexion
+                }
+
+                # Guardar en MongoDB (lecturas) y actualizar historial local
+                if mongo_collection_lecturas is not None:
+                    try:
+                        mongo_collection_lecturas.insert_one(registro)
+                        st.success("Registro guardado en MongoDB ✅")
+                    except Exception as e:
+                        st.warning(f"No se pudo guardar en MongoDB: {e}")
+                        st.session_state.setdefault("historia_local", []).insert(0, registro)
+                else:
+                    st.session_state.setdefault("historia_local", []).insert(0, registro)
+                    st.success("Registro guardado (local en sesión).")
+
+                # Mostrar resumen y mapa con ruta
+                st.write(f"**Resumen:** {registro['titulo']} — {registro['autor']}")
+                st.write(f"Duración: {registro['duracion_str']} — Distancia: {registro['distancia_km']*1000:.1f} m — {registro['modo']}")
+                st.write(f"Páginas leídas: {registro['paginas_leidas']}")
+                st.write(f"Reflexión: {registro['reflexion']}")
+
+                if google_maps_api_key:
+                    origin = f"{start_coords[0]},{start_coords[1]}"
+                    dest = f"{end_coords[0]},{end_coords[1]}"
+                    directions_url = (
+                        f"https://www.google.com/maps/embed/v1/directions?key={google_maps_api_key}"
+                        f"&origin={origin}&destination={dest}&mode=walking"
+                    )
+                    st.components.v1.html(f'<iframe width="100%" height="320" src="{directions_url}" style="border:0"></iframe>', height=320)
+                else:
+                    st.warning("No hay google_maps_api_key para mostrar ruta.")
+
+                st.session_state["reading_started"] = False
+                if "start_coords" in st.session_state:
+                    del st.session_state["start_coords"]
+
+# Historial (local + Mongo)
 st.markdown("---")
-st.subheader("📜 Historial de lecturas recientes")
-historial = []
-if mongo_collection_lecturas:
+st.subheader("Historial (local + Mongo)")
+
+historia = st.session_state.get("historia_local", [])
+if mongo_collection_lecturas is not None:
     try:
-        cursor = mongo_collection_lecturas.find().sort("inicio_ts", -1).limit(10)
-        historial = list(cursor)
+        docs = list(mongo_collection_lecturas.find().sort("inicio_ts", -1).limit(30))
+        for d in docs:
+            historia.append({
+                "titulo": d.get("titulo",""),
+                "autor": d.get("autor",""),
+                "duracion_str": f"{int(d.get('duracion_sec',0)//3600):02d}:{int(d.get('duracion_sec',0)%3600//60):02d}:{int(d.get('duracion_sec',0)%60):02d}",
+                "distancia_km": d.get("distancia_km", 0),
+                "inicio_coords": d.get("inicio_coords"),
+                "fin_coords": d.get("fin_coords"),
+                "modo": d.get("modo","")
+            })
     except Exception as e:
         st.warning(f"No se pudo obtener historial: {e}")
 
-if historial:
-    for reg in historial:
-        dur_seg = reg.get("duracion_seg", 0)
-        hh = dur_seg // 3600
-        mm = (dur_seg % 3600) // 60
-        ss = dur_seg % 60
-        paginas = reg.get("paginas_leidas", "?")
-        dist_km = reg.get("distancia_km", 0)
-
-        st.markdown(f"**{reg.get('titulo','Sin título')}** — {reg.get('autor','')}")
-        st.write(f"Duración: {hh:02d}:{mm:02d}:{ss:02d} | Páginas leídas: {paginas} | Distancia: {dist_km:.2f} km")
-        st.write(f"Resumen: {reg.get('resumen','(vacío)')}")
-
-        # Mostrar ruta con Google Maps Embed (si hay ruta)
-        ruta = reg.get("ruta", [])
-        if ruta and GOOGLE_MAPS_API_KEY:
-            origen = f"{ruta[0][0]},{ruta[0][1]}"
-            destino = f"{ruta[-1][0]},{ruta[-1][1]}"
-            url_map = (
-                f"https://www.google.com/maps/embed/v1/directions?key={GOOGLE_MAPS_API_KEY}"
-                f"&origin={origen}&destination={destino}&mode=walking"
-            )
-            components.html(f'<iframe width="100%" height="220" src="{url_map}" style="border:0"></iframe>', height=220)
-
+if historia:
+    for h in historia:
+        st.markdown(f"**{h.get('titulo','Sin título')}** — {h.get('autor','')}")
+        st.write(f"Duración: {h.get('duracion_str','?')} — Distancia: {round(h.get('distancia_km',0)*1000,1)} m — {h.get('modo','')}")
+        if h.get("inicio_coords") and h.get("fin_coords"):
+            o = h["inicio_coords"]
+            d = h["fin_coords"]
+            if google_maps_api_key:
+                origin = f"{o['lat']},{o['lon']}"
+                dest = f"{d['lat']},{d['lon']}"
+                directions_url = (
+                    f"https://www.google.com/maps/embed/v1/directions?key={google_maps_api_key}"
+                    f"&origin={origin}&destination={dest}&mode=walking"
+                )
+                st.components.v1.html(f'<iframe width="100%" height="220" src="{directions_url}" style="border:0"></iframe>', height=220)
         st.markdown("---")
 else:
-    st.info("No hay lecturas registradas aún.")
+    st.info("Aún no hay registros.")
