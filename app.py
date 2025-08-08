@@ -8,6 +8,7 @@ from streamlit.components.v1 import html
 import openai
 import base64
 import json
+import requests
 
 # === CONFIGURACIÓN ===
 st.set_page_config(page_title="Reader Tracker", layout="wide")
@@ -16,6 +17,7 @@ st.title("Reader Tracker")
 # === SECRETS ===
 mongo_uri = st.secrets.get("mongo_uri")
 openai_api_key = st.secrets.get("openai_api_key")
+ocr_space_api_key = st.secrets.get("ocr_space_api_key")
 google_maps_api_key = st.secrets.get("google_maps_api_key")
 openai.organization = st.secrets.get("openai_org_id", None)
 openai.api_key = openai_api_key
@@ -35,7 +37,6 @@ def to_datetime_local(dt):
 # === SESIÓN ESTADO BASE ===
 for key, default in {
     "dev_start": None,
-    # Módulo 2
     "lectura_titulo": None,
     "lectura_paginas": None,
     "lectura_pagina_actual": 0,
@@ -47,6 +48,8 @@ for key, default in {
     "cronometro_segundos": 0,
     "cronometro_running": False,
     "lectura_id": None,
+    "ocr_text_raw": None,
+    "ocr_text_cleaned": None,
 }.items():
     if key not in st.session_state:
         st.session_state[key] = default
@@ -59,37 +62,13 @@ seccion = st.selectbox(
     "Selecciona una sección:",
     [
         "Tiempo de desarrollo",
-        "GPT-4o y Cronómetro",
+        "OCR + OpenAI + Cronómetro",
         "Mapa en vivo",
         "Historial de lecturas"
     ]
 )
 
-# === FUNCIONES MÓDULO 2 ===
-
-def detectar_titulo_con_openai(imagen_bytes):
-    base64_image = base64.b64encode(imagen_bytes).decode("utf-8")
-    try:
-        st.write("🔍 Enviando imagen a OpenAI para detectar título...")
-        response = openai.ChatCompletion.create(
-            model="gpt-4o",
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": "¿Cuál es el título del texto que aparece en esta imagen? Solo el título, por favor."},
-                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}},
-                    ],
-                }
-            ],
-            max_tokens=50,
-        )
-        titulo = response.choices[0].message.content.strip()
-        st.write("✅ Respuesta recibida de OpenAI:", titulo)
-        return titulo
-    except Exception as e:
-        st.error(f"❌ Error llamando a OpenAI: {e}")
-        return None
+# === FUNCIONES ===
 
 def coleccion_por_titulo(titulo):
     nombre = titulo.lower().replace(" ", "_")
@@ -133,7 +112,7 @@ def finalizar_lectura():
     for key in ["lectura_titulo", "lectura_paginas", "lectura_pagina_actual",
                 "lectura_inicio", "lectura_en_curso", "ruta_actual",
                 "ruta_distancia_km", "foto_base64", "cronometro_segundos",
-                "cronometro_running", "lectura_id"]:
+                "cronometro_running", "lectura_id", "ocr_text_raw", "ocr_text_cleaned"]:
         st.session_state[key] = None if key != "lectura_pagina_actual" else 0
 
 def mostrar_historial(titulo):
@@ -278,6 +257,7 @@ if mensaje_js and isinstance(mensaje_js, dict) and "type" in mensaje_js and mens
         )
     st.success(f"Ruta guardada. Distancia total: {distancia_total:.2f} km")
     finalizar_lectura()
+    st.rerun()
 
 # ------------------ MÓDULO 1: Tiempo de desarrollo ------------------
 if seccion == "Tiempo de desarrollo":
@@ -310,165 +290,136 @@ if seccion == "Tiempo de desarrollo":
             })
             st.rerun()
 
-# ------------------ MÓDULO 2: GPT-4o y Cronómetro ------------------
-elif seccion == "GPT-4o y Cronómetro":
-    st.header("GPT-4o y Cronómetro")
+# ------------------ MÓDULO 2: OCR + OpenAI + Cronómetro ------------------
+elif seccion == "OCR + OpenAI + Cronómetro":
+    st.header("OCR + OpenAI + Cronómetro")
 
-    # 1. Cargar foto y detectar título (solo si no hay título en sesión)
-    if not st.session_state["lectura_titulo"]:
+    # 1. Cargar foto y hacer OCR (si no hay texto raw aún)
+    if not st.session_state["ocr_text_raw"]:
         imagen = st.file_uploader("Sube foto portada o parcial del texto (JPG/PNG obligatorio):", type=["jpg", "jpeg", "png"])
         if imagen:
-            bytes_img = imagen.read()
-            st.session_state["foto_base64"] = base64.b64encode(bytes_img).decode("utf-8")
-            with st.spinner("Detectando título con IA..."):
-                titulo = detectar_titulo_con_openai(bytes_img)
-            if titulo:
-                st.session_state["lectura_titulo"] = titulo
-                st.success(f"Título detectado: {titulo}")
-            else:
-                st.error("No se pudo detectar el título. Intenta con una imagen más clara o prueba luego.")
+            with st.spinner("Procesando imagen con OCR.space..."):
+                bytes_img = imagen.read()
+                encoded_image = base64.b64encode(bytes_img).decode("utf-8")
+                st.session_state["foto_base64"] = encoded_image
 
-            # Verificar si ya hay páginas totales guardadas
-            if titulo:
-                col = coleccion_por_titulo(titulo)
-                info = col.find_one({})
-                if info and info.get("paginas_totales"):
-                    st.session_state["lectura_paginas"] = info["paginas_totales"]
+                # Llamar OCR.space
+                payload = {
+                    "base64Image": f"data:image/jpeg;base64,{encoded_image}",
+                    "language": "spa",
+                    "apikey": ocr_space_api_key,
+                    "isOverlayRequired": False
+                }
+                response = requests.post("https://api.ocr.space/parse/image", data=payload)
+                if response.status_code == 200:
+                    result = response.json()
+                    parsed_text = ""
+                    try:
+                        parsed_text = result["ParsedResults"][0]["ParsedText"]
+                    except Exception:
+                        parsed_text = ""
+                    if parsed_text:
+                        st.session_state["ocr_text_raw"] = parsed_text
+                    else:
+                        st.error("OCR no pudo detectar texto. Intenta con otra imagen.")
                 else:
-                    paginas_input = st.number_input("Ingresa número total de páginas del texto:", min_value=1, step=1)
-                    if paginas_input > 0:
-                        st.session_state["lectura_paginas"] = paginas_input
+                    st.error(f"Ocurrió un error en OCR.space: {response.status_code}")
 
-    else:
-        st.markdown(f"### Texto: **{st.session_state['lectura_titulo']}**")
-        st.markdown(f"Total páginas: **{st.session_state['lectura_paginas']}**")
+    # 2. Mostrar texto detectado y opción para limpiar con OpenAI
+    if st.session_state["ocr_text_raw"]:
+        st.subheader("Texto detectado por OCR:")
+        st.text_area("Texto OCR crudo:", st.session_state["ocr_text_raw"], height=150)
 
-    # 2. Botón para iniciar lectura
-    if not st.session_state["lectura_en_curso"] and st.session_state["lectura_titulo"] and st.session_state["lectura_paginas"]:
+        if st.button("🔄 Limpiar y extraer título con OpenAI"):
+            prompt = f"Por favor extrae y limpia el título principal de este texto:\n\n{st.session_state['ocr_text_raw']}\n\nSolo responde con el título claro y limpio."
+            try:
+                response = openai.ChatCompletion.create(
+                    model="gpt-4o",
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=50,
+                )
+                titulo_limpio = response.choices[0].message.content.strip()
+                st.session_state["ocr_text_cleaned"] = titulo_limpio
+                st.success(f"Título limpio detectado: {titulo_limpio}")
+            except Exception as e:
+                st.error(f"Error llamando a OpenAI: {e}")
+
+    # 3. Mostrar título limpio o usar texto raw si no hay limpio
+    titulo_actual = st.session_state.get("ocr_text_cleaned") or st.session_state.get("ocr_text_raw")
+
+    if titulo_actual:
+        st.markdown(f"### Texto detectado: **{titulo_actual}**")
+
+        # Pedir número total de páginas (si no está definido aún)
+        if not st.session_state["lectura_paginas"]:
+            paginas_input = st.number_input("Ingresa número total de páginas del texto:", min_value=1, step=1)
+            if paginas_input > 0:
+                st.session_state["lectura_paginas"] = paginas_input
+
+    # 4. Botón para iniciar lectura
+    if not st.session_state["lectura_en_curso"] and titulo_actual and st.session_state["lectura_paginas"]:
         if st.button("🟢 Iniciar lectura"):
             st.session_state["lectura_en_curso"] = True
             st.session_state["lectura_inicio"] = datetime.now(tz)
             st.session_state["cronometro_segundos"] = 0
             st.session_state["cronometro_running"] = True
+            st.session_state["lectura_titulo"] = titulo_actual
             iniciar_lectura(
                 st.session_state["lectura_titulo"],
                 st.session_state["lectura_paginas"],
-                st.session_state["foto_base64"]
+                st.session_state["foto_base64"],
             )
-            st.experimental_rerun()
+            st.rerun()
 
-    # 3. Durante la lectura (cronómetro, página actual, mapa, etc.)
+    # 5. Cronómetro y avance de páginas durante lectura
     if st.session_state["lectura_en_curso"]:
-        if st.session_state["cronometro_running"]:
-            tiempo_transcurrido = (datetime.now(tz) - st.session_state["lectura_inicio"]).total_seconds()
-            st.session_state["cronometro_segundos"] = int(tiempo_transcurrido)
+        st.markdown(f"### Leyendo: {st.session_state['lectura_titulo']}")
+        minutos = st.session_state["cronometro_segundos"] // 60
+        segundos = st.session_state["cronometro_segundos"] % 60
+        st.markdown(f"⏱️ Tiempo transcurrido: {minutos:02d}:{segundos:02d}")
 
-        duracion_str = str(timedelta(seconds=st.session_state["cronometro_segundos"]))
-        st.markdown(f"**⏱ Tiempo de lectura:** {duracion_str}")
+        # Cronómetro manual
+        if st.session_state["cronometro_running"]:
+            st.session_state["cronometro_segundos"] += 1
 
         pagina_actual = st.number_input(
-            "Página actual que llevas leyendo:",
-            min_value=1,
+            "Página actual leída:",
+            min_value=0,
             max_value=st.session_state["lectura_paginas"],
             value=st.session_state["lectura_pagina_actual"],
-            step=1
+            step=1,
+            key="pagina_input",
         )
+
         if pagina_actual != st.session_state["lectura_pagina_actual"]:
             st.session_state["lectura_pagina_actual"] = pagina_actual
-            actualizar_lectura(pagina_actual, st.session_state["ruta_actual"], st.session_state["ruta_distancia_km"])
+            actualizar_lectura(
+                st.session_state["lectura_pagina_actual"],
+                st.session_state["ruta_actual"],
+                st.session_state["ruta_distancia_km"],
+            )
 
-        if st.session_state["cronometro_segundos"] > 0 and pagina_actual > 0:
-            ritmo = pagina_actual / (st.session_state["cronometro_segundos"] / 60)  # páginas/minuto
-            paginas_restantes = st.session_state["lectura_paginas"] - pagina_actual
-            minutos_restantes = paginas_restantes / ritmo if ritmo > 0 else 0
-            proyeccion = datetime.now(tz) + timedelta(minutes=minutos_restantes)
-            st.markdown(f"**📊 Ritmo:** {ritmo:.2f} páginas/minuto")
-            st.markdown(f"**📅 Proyección fin lectura:** {proyeccion.strftime('%Y-%m-%d %H:%M:%S')}")
-
-        if google_maps_api_key:
-            render_map_con_dibujo(google_maps_api_key)
-        else:
-            st.warning("No hay API key de Google Maps para mostrar mapa.")
-
-    # 4. Botón para finalizar lectura manualmente
-    if st.session_state["lectura_en_curso"]:
+        # Botón para finalizar lectura manualmente
         if st.button("⏹️ Finalizar lectura manualmente"):
             finalizar_lectura()
-            st.success("Lectura finalizada y guardada.")
-            st.experimental_rerun()
-
-    # 5. Mostrar historial de lecturas para este título
-    if st.session_state["lectura_titulo"]:
-        st.markdown("---")
-        st.subheader(f"Historial de lecturas: {st.session_state['lectura_titulo']}")
-        mostrar_historial(st.session_state["lectura_titulo"])
+            st.success("Lectura finalizada manualmente.")
+            st.rerun()
 
 # ------------------ MÓDULO 3: Mapa en vivo ------------------
 elif seccion == "Mapa en vivo":
-    st.header("Mapa en vivo")
+    st.header("Mapa en vivo con registro de ruta")
 
-    def render_live_map(api_key, height=420, center_coords=None):
-        center_lat = center_coords[0] if center_coords else 0
-        center_lon = center_coords[1] if center_coords else 0
-        html_code = f"""
-        <!doctype html>
-        <html>
-          <head>
-            <meta name="viewport" content="initial-scale=1.0, width=device-width" />
-            <style> html, body, #map {{ height: 100%; margin:0; padding:0 }} </style>
-            <script src="https://maps.googleapis.com/maps/api/js?key={api_key}&libraries=geometry"></script>
-          </head>
-          <body>
-            <div id="map" style="height:{height}px;"></div>
-            <script>
-              function initMap() {{
-                var map = new google.maps.Map(document.getElementById('map'), {{
-                  zoom: 15,
-                  center: new google.maps.LatLng({center_lat}, {center_lon}),
-                  mapTypeId: 'roadmap'
-                }});
-              }}
-              window.onload = initMap;
-            </script>
-          </body>
-        </html>
-        """
-        html(html_code, height=height)
-
-    if google_maps_api_key:
-        render_live_map(google_maps_api_key, center_coords=(4.65, -74.05))
+    if not st.session_state["lectura_en_curso"]:
+        st.info("No hay lectura en curso. Inicia una lectura en el módulo OCR primero.")
     else:
-        st.error("Falta clave API de Google Maps para mostrar mapa en vivo.")
+        render_map_con_dibujo(google_maps_api_key)
 
 # ------------------ MÓDULO 4: Historial de lecturas ------------------
 elif seccion == "Historial de lecturas":
-    st.header("Historial de todas las lecturas")
+    st.header("Historial de lecturas")
 
-    colecciones = db.list_collection_names()
-    titulos = [c.replace("_", " ").title() for c in colecciones if c != "dev_tracker"]
+    textos = [col for col in db.list_collection_names() if col != "dev_tracker"]
+    titulo_sel = st.selectbox("Selecciona texto para ver historial:", textos)
 
-    titulo_seleccionado = st.selectbox("Selecciona texto para historial:", titulos)
-
-    if titulo_seleccionado:
-        col_name = titulo_seleccionado.lower().replace(" ", "_")
-        col = db[col_name]
-        lecturas = list(col.find().sort("inicio", -1))
-        if not lecturas:
-            st.info("No hay registros para este texto.")
-        else:
-            data = []
-            for i, l in enumerate(lecturas):
-                inicio = to_datetime_local(l["inicio"]).strftime("%Y-%m-%d %H:%M:%S")
-                fin = to_datetime_local(l["fin"]).strftime("%Y-%m-%d %H:%M:%S") if l.get("fin") else "-"
-                duracion = str(timedelta(seconds=l.get("duracion_segundos", 0))) if l.get("duracion_segundos") else "-"
-                paginas = f"{l.get('pagina_final', '-')}/{l.get('paginas_totales', '-')}"
-                distancia = f"{l.get('distancia_km', 0):.2f} km"
-                data.append({
-                    "#": len(lecturas) - i,
-                    "Inicio": inicio,
-                    "Fin": fin,
-                    "Duración": duracion,
-                    "Páginas": paginas,
-                    "Distancia": distancia
-                })
-            st.dataframe(data)
+    if titulo_sel:
+        mostrar_historial(titulo_sel)
