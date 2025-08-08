@@ -69,21 +69,27 @@ seccion = st.selectbox(
 
 def detectar_titulo_con_openai(imagen_bytes):
     base64_image = base64.b64encode(imagen_bytes).decode("utf-8")
-    response = openai.chat.completions.create(
-        model="gpt-4o",
-        messages=[
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": "¿Cuál es el título del texto que aparece en esta imagen? Solo el título, por favor."},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}},
-                ],
-            }
-        ],
-        max_tokens=50,
-    )
-    titulo = response.choices[0].message.content.strip()
-    return titulo
+    try:
+        st.write("🔍 Enviando imagen a OpenAI para detectar título...")
+        response = openai.ChatCompletion.create(
+            model="gpt-4o",
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "¿Cuál es el título del texto que aparece en esta imagen? Solo el título, por favor."},
+                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}},
+                    ],
+                }
+            ],
+            max_tokens=50,
+        )
+        titulo = response.choices[0].message.content.strip()
+        st.write("✅ Respuesta recibida de OpenAI:", titulo)
+        return titulo
+    except Exception as e:
+        st.error(f"❌ Error llamando a OpenAI: {e}")
+        return None
 
 def coleccion_por_titulo(titulo):
     nombre = titulo.lower().replace(" ", "_")
@@ -236,26 +242,33 @@ def render_map_con_dibujo(api_key):
     html(html_code, height=600)
 
 # Escuchar mensaje JS (ruta dibujada)
-from streamlit_js_eval import streamlit_js_eval
+try:
+    from streamlit_js_eval import streamlit_js_eval
+    mensaje_js = streamlit_js_eval(js="window.addEventListener('message', (event) => {return event.data});", key="js_eval_listener")
+except ImportError:
+    mensaje_js = None
+    st.warning("Módulo 'streamlit_js_eval' no instalado: no se podrá recibir ruta desde mapa.")
 
-mensaje_js = streamlit_js_eval(js="window.addEventListener('message', (event) => {return event.data});", key="js_eval_listener")
-
-if mensaje_js and "type" in mensaje_js and mensaje_js["type"] == "guardar_ruta":
+if mensaje_js and isinstance(mensaje_js, dict) and "type" in mensaje_js and mensaje_js["type"] == "guardar_ruta":
     ruta = json.loads(mensaje_js["ruta"])
     st.session_state["ruta_actual"] = ruta
+
+    # Calcular distancia total con fórmula Haversine
     from math import radians, cos, sin, asin, sqrt
     def haversine(lat1, lon1, lat2, lon2):
-        R = 6371
+        R = 6371  # km
         dlat = radians(lat2 - lat1)
         dlon = radians(lon2 - lon1)
         a = sin(dlat / 2) ** 2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlon / 2) ** 2
         c = 2 * asin(sqrt(a))
         return R * c
+
     distancia_total = 0
     for i in range(len(ruta) - 1):
         p1 = ruta[i]
         p2 = ruta[i + 1]
         distancia_total += haversine(p1["lat"], p1["lng"], p2["lat"], p2["lng"])
+
     st.session_state["ruta_distancia_km"] = distancia_total
     if st.session_state["lectura_en_curso"]:
         actualizar_lectura(
@@ -303,24 +316,29 @@ elif seccion == "GPT-4o y Cronómetro":
 
     # 1. Cargar foto y detectar título (solo si no hay título en sesión)
     if not st.session_state["lectura_titulo"]:
-        imagen = st.file_uploader("Sube foto portada o portada parcial del texto (obligatorio JPG/PNG):", type=["jpg","jpeg","png"])
+        imagen = st.file_uploader("Sube foto portada o parcial del texto (JPG/PNG obligatorio):", type=["jpg", "jpeg", "png"])
         if imagen:
             bytes_img = imagen.read()
             st.session_state["foto_base64"] = base64.b64encode(bytes_img).decode("utf-8")
             with st.spinner("Detectando título con IA..."):
                 titulo = detectar_titulo_con_openai(bytes_img)
+            if titulo:
                 st.session_state["lectura_titulo"] = titulo
                 st.success(f"Título detectado: {titulo}")
-
-            # Verificar si colección ya tiene páginas totales
-            col = coleccion_por_titulo(titulo)
-            info = col.find_one({})
-            if info and info.get("paginas_totales"):
-                st.session_state["lectura_paginas"] = info["paginas_totales"]
             else:
-                paginas_input = st.number_input("Ingresa número total de páginas del texto:", min_value=1, step=1)
-                if paginas_input > 0:
-                    st.session_state["lectura_paginas"] = paginas_input
+                st.error("No se pudo detectar el título. Intenta con una imagen más clara o prueba luego.")
+
+            # Verificar si ya hay páginas totales guardadas
+            if titulo:
+                col = coleccion_por_titulo(titulo)
+                info = col.find_one({})
+                if info and info.get("paginas_totales"):
+                    st.session_state["lectura_paginas"] = info["paginas_totales"]
+                else:
+                    paginas_input = st.number_input("Ingresa número total de páginas del texto:", min_value=1, step=1)
+                    if paginas_input > 0:
+                        st.session_state["lectura_paginas"] = paginas_input
+
     else:
         st.markdown(f"### Texto: **{st.session_state['lectura_titulo']}**")
         st.markdown(f"Total páginas: **{st.session_state['lectura_paginas']}**")
@@ -339,9 +357,8 @@ elif seccion == "GPT-4o y Cronómetro":
             )
             st.experimental_rerun()
 
-    # 3. Durante lectura: cronómetro, mapa con dibujo, página actual, ritmo y proyecciones
+    # 3. Durante la lectura (cronómetro, página actual, mapa, etc.)
     if st.session_state["lectura_en_curso"]:
-        # Cronómetro (simple)
         if st.session_state["cronometro_running"]:
             tiempo_transcurrido = (datetime.now(tz) - st.session_state["lectura_inicio"]).total_seconds()
             st.session_state["cronometro_segundos"] = int(tiempo_transcurrido)
@@ -349,7 +366,6 @@ elif seccion == "GPT-4o y Cronómetro":
         duracion_str = str(timedelta(seconds=st.session_state["cronometro_segundos"]))
         st.markdown(f"**⏱ Tiempo de lectura:** {duracion_str}")
 
-        # Página actual (input)
         pagina_actual = st.number_input(
             "Página actual que llevas leyendo:",
             min_value=1,
@@ -361,22 +377,20 @@ elif seccion == "GPT-4o y Cronómetro":
             st.session_state["lectura_pagina_actual"] = pagina_actual
             actualizar_lectura(pagina_actual, st.session_state["ruta_actual"], st.session_state["ruta_distancia_km"])
 
-        # Ritmo de lectura y proyección
         if st.session_state["cronometro_segundos"] > 0 and pagina_actual > 0:
-            ritmo = pagina_actual / (st.session_state["cronometro_segundos"] / 60)  # páginas por minuto
+            ritmo = pagina_actual / (st.session_state["cronometro_segundos"] / 60)  # páginas/minuto
             paginas_restantes = st.session_state["lectura_paginas"] - pagina_actual
             minutos_restantes = paginas_restantes / ritmo if ritmo > 0 else 0
             proyeccion = datetime.now(tz) + timedelta(minutes=minutos_restantes)
             st.markdown(f"**📊 Ritmo:** {ritmo:.2f} páginas/minuto")
             st.markdown(f"**📅 Proyección fin lectura:** {proyeccion.strftime('%Y-%m-%d %H:%M:%S')}")
 
-        # Mapa con ruta y botón finalizar lectura
         if google_maps_api_key:
             render_map_con_dibujo(google_maps_api_key)
         else:
             st.warning("No hay API key de Google Maps para mostrar mapa.")
 
-    # 4. Botón finalizar lectura (si no ya enviado desde JS)
+    # 4. Botón para finalizar lectura manualmente
     if st.session_state["lectura_en_curso"]:
         if st.button("⏹️ Finalizar lectura manualmente"):
             finalizar_lectura()
@@ -405,50 +419,16 @@ elif seccion == "Mapa en vivo":
             <script src="https://maps.googleapis.com/maps/api/js?key={api_key}&libraries=geometry"></script>
           </head>
           <body>
-            <div id="map"></div>
+            <div id="map" style="height:{height}px;"></div>
             <script>
-              let map;
-              let marker;
-              let path = [];
-
               function initMap() {{
-                map = new google.maps.Map(document.getElementById('map'), {{
-                  zoom: 17,
-                  center: {{lat:{center_lat}, lng:{center_lon}}},
+                var map = new google.maps.Map(document.getElementById('map'), {{
+                  zoom: 15,
+                  center: new google.maps.LatLng({center_lat}, {center_lon}),
                   mapTypeId: 'roadmap'
                 }});
-                marker = new google.maps.Marker({{ map: map, position: {{lat:{center_lat}, lng:{center_lon}}}, title: "Tú" }});
               }}
-
-              function updatePosition(pos) {{
-                const lat = pos.coords.latitude;
-                const lng = pos.coords.longitude;
-                const latlng = new google.maps.LatLng(lat, lng);
-                marker.setPosition(latlng);
-                map.setCenter(latlng);
-              }}
-
-              function handleError(err) {{
-                console.error('Geolocation error', err);
-              }}
-
-              if (navigator.geolocation) {{
-                navigator.geolocation.getCurrentPosition(
-                  function(p) {{
-                    initMap();
-                    updatePosition(p);
-                    navigator.geolocation.watchPosition(updatePosition, handleError, {{ enableHighAccuracy: true, maximumAge: 1000, timeout: 10000 }});
-                  }},
-                  function(e) {{
-                    initMap();
-                    console.error('Error getCurrentPosition', e);
-                  }},
-                  {{ enableHighAccuracy: true, maximumAge: 1000, timeout: 10000 }}
-                );
-              }} else {{
-                initMap();
-                console.error('Navegador no soporta geolocalización');
-              }}
+              window.onload = initMap;
             </script>
           </body>
         </html>
@@ -456,11 +436,39 @@ elif seccion == "Mapa en vivo":
         html(html_code, height=height)
 
     if google_maps_api_key:
-        render_live_map(google_maps_api_key, height=520, center_coords=st.session_state.get("start_coords"))
+        render_live_map(google_maps_api_key, center_coords=(4.65, -74.05))
     else:
-        st.info("Añadí google_maps_api_key en st.secrets para ver el mapa dinámico.")
+        st.error("Falta clave API de Google Maps para mostrar mapa en vivo.")
 
 # ------------------ MÓDULO 4: Historial de lecturas ------------------
 elif seccion == "Historial de lecturas":
-    st.header("Historial de lecturas")
-    st.info("Aquí irá el historial completo de lecturas (pendiente implementar).")
+    st.header("Historial de todas las lecturas")
+
+    colecciones = db.list_collection_names()
+    titulos = [c.replace("_", " ").title() for c in colecciones if c != "dev_tracker"]
+
+    titulo_seleccionado = st.selectbox("Selecciona texto para historial:", titulos)
+
+    if titulo_seleccionado:
+        col_name = titulo_seleccionado.lower().replace(" ", "_")
+        col = db[col_name]
+        lecturas = list(col.find().sort("inicio", -1))
+        if not lecturas:
+            st.info("No hay registros para este texto.")
+        else:
+            data = []
+            for i, l in enumerate(lecturas):
+                inicio = to_datetime_local(l["inicio"]).strftime("%Y-%m-%d %H:%M:%S")
+                fin = to_datetime_local(l["fin"]).strftime("%Y-%m-%d %H:%M:%S") if l.get("fin") else "-"
+                duracion = str(timedelta(seconds=l.get("duracion_segundos", 0))) if l.get("duracion_segundos") else "-"
+                paginas = f"{l.get('pagina_final', '-')}/{l.get('paginas_totales', '-')}"
+                distancia = f"{l.get('distancia_km', 0):.2f} km"
+                data.append({
+                    "#": len(lecturas) - i,
+                    "Inicio": inicio,
+                    "Fin": fin,
+                    "Duración": duracion,
+                    "Páginas": paginas,
+                    "Distancia": distancia
+                })
+            st.dataframe(data)
