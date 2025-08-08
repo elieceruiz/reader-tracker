@@ -1,6 +1,5 @@
 streamlit
-streamlit-js-eval
 pymongo
 openai
+pytz
 requests
-geopy
