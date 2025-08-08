@@ -239,7 +239,7 @@ if mensaje_js and isinstance(mensaje_js, dict) and "type" in mensaje_js and mens
         )
     st.success(f"Ruta guardada. Distancia total: {distancia_total:.2f} km")
     finalizar_lectura()
-    st.experimental_rerun()
+    st.rerun()
 
 # === SELECCIÓN DE MÓDULO ===
 seccion = st.selectbox(
@@ -272,7 +272,7 @@ if seccion == "Tiempo de desarrollo":
                 {"$set": {"fin": datetime.now(tz), "duracion_segundos": segundos_transcurridos}}
             )
             st.success(f"✅ Desarrollo finalizado. Duración: {duracion}")
-            st.experimental_rerun()
+            st.rerun()
 
     else:
         if st.button("🟢 Iniciar desarrollo"):
@@ -281,7 +281,7 @@ if seccion == "Tiempo de desarrollo":
                 "fin": None,
                 "duracion_segundos": None
             })
-            st.experimental_rerun()
+            st.rerun()
 
 # --- MÓDULO 2: Lectura con Cronómetro ---
 elif seccion == "Lectura con Cronómetro":
@@ -311,14 +311,14 @@ elif seccion == "Lectura con Cronómetro":
                 st.session_state["cronometro_running"] = True
                 st.session_state["cronometro_segundos"] = 0
                 iniciar_lectura(st.session_state["lectura_titulo"], st.session_state["lectura_paginas"], st.session_state["foto_base64"])
-                st.experimental_rerun()
+                st.rerun()
         else:
             st.markdown("### Lectura en curso...")
 
             if st.session_state["cronometro_running"]:
                 st.markdown(f"⏰ Tiempo transcurrido: {timedelta(seconds=st.session_state['cronometro_segundos'])}")
                 st.session_state["cronometro_segundos"] += 1
-                st.experimental_rerun()
+                st.rerun()
             else:
                 st.markdown(f"⏰ Tiempo detenido: {timedelta(seconds=st.session_state['cronometro_segundos'])}")
 
@@ -341,7 +341,7 @@ elif seccion == "Lectura con Cronómetro":
             if st.button("⏹️ Finalizar lectura"):
                 finalizar_lectura()
                 st.success("Lectura finalizada y guardada.")
-                st.experimental_rerun()
+                st.rerun()
 
 # --- MÓDULO 3: Mapa en vivo ---
 elif seccion == "Mapa en vivo":
