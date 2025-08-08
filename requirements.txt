@@ -1,5 +1,5 @@
 streamlit
-pymongo[srv] 
-geopy
+pymongo
 openai
 streamlit-js-eval
+pytz
