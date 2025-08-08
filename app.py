@@ -388,4 +388,24 @@ elif seccion == "Historial de lecturas":
     st.header("Historial de lecturas por título")
     titulo_hist = st.text_input("Ingresa el título para consultar historial:")
     if titulo_hist:
-        mostrar_historial(titulo_hist)
+        col = coleccion_por_titulo(titulo_hist)
+        lecturas = list(col.find().sort("inicio", -1))
+        if not lecturas:
+            st.info("No hay registros de lecturas para este texto.")
+        else:
+            data = []
+            for i, l in enumerate(lecturas):
+                inicio = to_datetime_local(l["inicio"]).strftime("%Y-%m-%d %H:%M:%S")
+                fin = to_datetime_local(l["fin"]).strftime("%Y-%m-%d %H:%M:%S") if l.get("fin") else "-"
+                duracion = str(timedelta(seconds=l.get("duracion_segundos", 0))) if l.get("duracion_segundos") else "-"
+                paginas = f"{l.get('pagina_final', '-')}/{l.get('paginas_totales', '-')}"
+                distancia = f"{l.get('distancia_km', 0):.2f} km"
+                data.append({
+                    "#": len(lecturas)-i,
+                    "Inicio": inicio,
+                    "Fin": fin,
+                    "Duración": duracion,
+                    "Páginas": paginas,
+                    "Distancia": distancia
+                })
+            st.dataframe(data)
