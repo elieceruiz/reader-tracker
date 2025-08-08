@@ -10,7 +10,7 @@ import openai
 from streamlit_js_eval import streamlit_js_eval
 from streamlit.components.v1 import html
 
-# ---------------- CONFIG ----------------
+# Configuración
 st.set_page_config(page_title="Reader Tracker (dinámico)", layout="wide")
 
 # Secrets
@@ -34,7 +34,7 @@ if mongo_uri:
     except Exception as e:
         st.warning(f"No se pudo conectar a MongoDB: {e}")
 
-# ---------------- UTILIDADES ----------------
+# Funciones auxiliares
 def haversine_km(lat1, lon1, lat2, lon2):
     R = 6371.0
     phi1 = math.radians(lat1)
@@ -155,7 +155,7 @@ def render_live_map(api_key, height=420, center_coords=None):
     """
     html(html_code, height=height)
 
-# ---------------- UI & FLUJO ----------------
+# UI y flujo principal
 st.title("📚 Reader Tracker — Mapa dinámico + GPT-4o (título y autor)")
 
 col_map, col_ctrl = st.columns((2,1))
@@ -189,7 +189,7 @@ with col_ctrl:
         coords = streamlit_js_eval(js_expressions=js_getpos, key="getpos_start")
         if coords:
             st.session_state["start_coords"] = (float(coords["latitude"]), float(coords["longitude"]))
-            st.success(f"📍 Ubicación de inicio confirmada: Latitude {st.session_state['start_coords'][0]:.6f}, Longitude {st.session_state['start_coords'][1]:.6f} ✔️")
+            st.success(f"📍 Ubicación de inicio confirmada: Latitud {st.session_state['start_coords'][0]:.6f}, Longitud {st.session_state['start_coords'][1]:.6f} ✔️")
         else:
             st.error("No se pudo obtener la ubicación desde el navegador. Asegurate de dar permiso.")
 
@@ -199,14 +199,13 @@ with col_ctrl:
 
     st.markdown("---")
     st.markdown("**2)** Sube la foto de la portada (opcional) y detectá título/autor con GPT-4o.")
-
     uploaded = st.file_uploader("Foto (portada o página interior clara)", type=["jpg","jpeg","png"])
 
     titulo_sugerido = ""
     autor_sugerido = ""
 
     if uploaded:
-        # No mostramos la imagen para que no quede visible en la UI
+        # No mostrar imagen para no dejarla en frontend
         if st.button("🔎 Detectar título y autor (GPT-4o)"):
             image_bytes = uploaded.read()
             with st.spinner("Analizando imagen con GPT-4o..."):
@@ -217,14 +216,13 @@ with col_ctrl:
                 st.success("Detección completada.")
             else:
                 st.warning("No se detectó título/autor con confianza.")
-        uploaded = None
+        uploaded = None  # Limpieza para no mantener imagen en frontend
 
     titulo = st.text_input("Título (confirmá o edita)", value=titulo_sugerido)
     autor = st.text_input("Autor (confirmá o edita)", value=autor_sugerido)
 
-    # Verificamos en MongoDB si ya tenemos páginas para el libro
     paginas_totales = None
-    if mongo_collection is not None and titulo.strip() != "":
+    if mongo_collection and titulo.strip() != "":
         libro = mongo_collection.database["libros"].find_one({"titulo": titulo})
         if libro and "paginas_totales" in libro:
             paginas_totales = libro["paginas_totales"]
@@ -240,7 +238,7 @@ with col_ctrl:
         st.session_state["reading_started"] = False
     if not st.session_state["reading_started"]:
         if st.button("▶️ Iniciar lectura"):
-            if "start_coords" not in st.session_state or st.session_state["start_coords"] is None:
+            if not st.session_state.get("start_coords"):
                 st.error("Primero capturá la ubicación de inicio con 'Capturar ubicación inicio'.")
             elif titulo.strip() == "":
                 st.error("Por favor ingresá o detectá el título del libro antes de iniciar.")
@@ -265,7 +263,7 @@ with col_ctrl:
               navigator.geolocation.getCurrentPosition(
                 (pos) => resolve({latitude: pos.coords.latitude, longitude: pos.coords.longitude}),
                 (err) => resolve(null),
-                {enableHighAccuracy: true, timeout:10000}
+                {enableHighAccuracy: true, timeout: 10000}
               );
             })
             """
@@ -280,7 +278,6 @@ with col_ctrl:
                 distancia_km = haversine_km(start_coords[0], start_coords[1], end_coords[0], end_coords[1])
                 modo = "En movimiento" if (distancia_km * 1000) > 10 else "En reposo"
 
-                # Página inicio y final
                 pagina_inicio = st.number_input("Página de inicio", min_value=1, max_value=paginas_totales or 10000, value=1)
                 pagina_fin = st.number_input("Página final", min_value=pagina_inicio, max_value=paginas_totales or 10000, value=pagina_inicio)
 
@@ -306,10 +303,9 @@ with col_ctrl:
                     "paginas_totales": paginas_totales,
                 }
 
-                # Guardar páginas totales en colección libros si no estaba registrado
-                if mongo_collection is not None:
+                if mongo_collection:
                     try:
-                        if paginas_totales is not None:
+                        if paginas_totales:
                             libros_col = mongo_collection.database["libros"]
                             libros_col.update_one(
                                 {"titulo": registro["titulo"]},
@@ -319,8 +315,7 @@ with col_ctrl:
                     except Exception as e:
                         st.warning(f"No se pudo actualizar colección libros: {e}")
 
-                # Guardar lectura en Mongo o local
-                if mongo_collection is not None:
+                if mongo_collection:
                     try:
                         mongo_collection.insert_one(registro)
                         st.success("Registro guardado en MongoDB ✅")
@@ -331,10 +326,9 @@ with col_ctrl:
                     st.session_state.setdefault("historia_local", []).insert(0, registro)
                     st.success("Registro guardado (local en sesión).")
 
-                # Mostrar resumen y mapa con ruta
                 st.write(f"**Resumen:** {registro['titulo']} — {registro['autor']}")
                 st.write(f"Duración: {registro['duracion_str']} — Distancia: {registro['distancia_km']*1000:.1f} m — {registro['modo']}")
-                
+
                 if google_maps_api_key:
                     origin = f"{start_coords[0]},{start_coords[1]}"
                     dest = f"{end_coords[0]},{end_coords[1]}"
@@ -347,13 +341,12 @@ with col_ctrl:
                     st.warning("No hay google_maps_api_key para mostrar ruta.")
 
                 st.session_state["reading_started"] = False
-                if "start_coords" in st.session_state:
-                    del st.session_state["start_coords"]
+                st.session_state.pop("start_coords", None)
 
     st.markdown("---")
     st.subheader("Historial (local + Mongo)")
     historia = st.session_state.get("historia_local", [])
-    if mongo_collection is not None:
+    if mongo_collection:
         try:
             docs = list(mongo_collection.find().sort("inicio_ts", -1).limit(30))
             for d in docs:
@@ -373,17 +366,16 @@ with col_ctrl:
         for h in historia:
             st.markdown(f"**{h.get('titulo','Sin título')}** — {h.get('autor','')}")
             st.write(f"Duración: {h.get('duracion_str','?')} — Distancia: {round(h.get('distancia_km',0)*1000,1)} m — {h.get('modo','')}")
-            if h.get("inicio_coords") and h.get("fin_coords"):
+            if h.get("inicio_coords") and h.get("fin_coords") and google_maps_api_key:
                 o = h["inicio_coords"]
                 d = h["fin_coords"]
-                if google_maps_api_key:
-                    origin = f"{o['lat']},{o['lon']}"
-                    dest = f"{d['lat']},{d['lon']}"
-                    directions_url = (
-                        f"https://www.google.com/maps/embed/v1/directions?key={google_maps_api_key}"
-                        f"&origin={origin}&destination={dest}&mode=walking"
-                    )
-                    st.components.v1.html(f'<iframe width="100%" height="220" src="{directions_url}" style="border:0"></iframe>', height=220)
+                origin = f"{o['lat']},{o['lon']}"
+                dest = f"{d['lat']},{d['lon']}"
+                directions_url = (
+                    f"https://www.google.com/maps/embed/v1/directions?key={google_maps_api_key}"
+                    f"&origin={origin}&destination={dest}&mode=walking"
+                )
+                st.components.v1.html(f'<iframe width="100%" height="220" src="{directions_url}" style="border:0"></iframe>', height=220)
             st.markdown("---")
     else:
-        st.info("Aún no hay registros
+        st.info("Aún no hay registros.")
