@@ -386,4 +386,4 @@ with col_ctrl:
                     st.components.v1.html(f'<iframe width="100%" height="220" src="{directions_url}" style="border:0"></iframe>', height=220)
             st.markdown("---")
     else:
-        st.info("Aún no hay registros") 
+        st.info("Aún no hay registros")
