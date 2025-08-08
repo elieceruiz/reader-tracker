@@ -1,12 +1,11 @@
 import streamlit as st
-import time
 from datetime import datetime, timedelta
 import pytz
 from pymongo import MongoClient
-import openai
 from dateutil.parser import parse
 from streamlit_autorefresh import st_autorefresh
 from streamlit.components.v1 import html
+import openai
 
 # === CONFIGURACIÓN ===
 st.set_page_config(page_title="Reader Tracker", layout="wide")
@@ -22,7 +21,7 @@ openai.organization = st.secrets.get("openai_org_id", None)
 client = MongoClient(mongo_uri)
 db = client["reader_tracker"]
 dev_col = db["dev_tracker"]
-# Otras colecciones que necesites, por ejemplo historial_col, etc.
+# Define aquí otras colecciones si las necesitas, e.g. historial_col, etc.
 
 # === ZONA HORARIA ===
 tz = pytz.timezone("America/Bogota")
@@ -36,30 +35,10 @@ def to_datetime_local(dt):
 if "dev_start" not in st.session_state:
     st.session_state["dev_start"] = None
 
-# === FUNCIONES ===
+# === REFRESCO AUTOMÁTICO PARA CRONÓMETRO ===
+count = st_autorefresh(interval=1000, key="cronometro_refresh")
 
-def iniciar_desarrollo():
-    ahora = datetime.now(tz)
-    st.session_state["dev_start"] = ahora
-    dev_col.insert_one({
-        "tipo": "desarrollo",
-        "inicio": ahora,
-        "en_curso": True
-    })
-
-def finalizar_desarrollo():
-    ahora = datetime.now(tz)
-    registro = dev_col.find_one({"en_curso": True, "tipo": "desarrollo"})
-    if registro:
-        dev_col.update_one(
-            {"_id": registro["_id"]},
-            {"$set": {"fin": ahora, "en_curso": False}}
-        )
-    st.session_state["dev_start"] = None
-
-# === MÓDULOS ===
-
-# Dropdown para elegir sección
+# === DROPDOWN PARA SELECCIONAR MÓDULO ===
 seccion = st.selectbox(
     "Selecciona una sección:",
     [
@@ -72,36 +51,30 @@ seccion = st.selectbox(
 
 # ------------------ MÓDULO 1: Tiempo de desarrollo ------------------
 
-if seccion == "1. Tiempo de desarrollo":
+if seccion == "Tiempo de desarrollo":
     st.header("Tiempo dedicado al desarrollo")
 
-    # Buscar en BD si hay sesión activa
-    sesion_activa = db.dev_sessions.find_one({"fin": None})
+    sesion_activa = dev_col.find_one({"fin": None})
 
     if sesion_activa:
-        # Hay sesión activa, tomar inicio y mostrar cronómetro
-        start_time = sesion_activa["inicio"].astimezone(tz) if hasattr(sesion_activa["inicio"], "astimezone") else to_datetime_local(sesion_activa["inicio"])
+        start_time = to_datetime_local(sesion_activa["inicio"])
         segundos_transcurridos = int((datetime.now(tz) - start_time).total_seconds())
+        duracion = str(timedelta(seconds=segundos_transcurridos))
+
         st.success(f"🧠 Desarrollo en curso desde las {start_time.strftime('%H:%M:%S')}")
+        st.markdown(f"### ⏱️ Duración: {duracion}")
 
-        cronometro = st.empty()
-        stop_button = st.button("⏹️ Finalizar desarrollo")
-
-        if stop_button:
-            duracion = str(timedelta(seconds=segundos_transcurridos))
-            db.dev_sessions.update_one({"_id": sesion_activa["_id"]}, {"$set": {"fin": datetime.now(tz), "duracion_segundos": segundos_transcurridos}})
+        if st.button("⏹️ Finalizar desarrollo"):
+            dev_col.update_one(
+                {"_id": sesion_activa["_id"]},
+                {"$set": {"fin": datetime.now(tz), "duracion_segundos": segundos_transcurridos}}
+            )
             st.success(f"✅ Desarrollo finalizado. Duración: {duracion}")
-            st.experimental_rerun()
-        else:
-            for i in range(segundos_transcurridos, segundos_transcurridos + 100000):
-                duracion = str(timedelta(seconds=i))
-                cronometro.markdown(f"### ⏱️ Duración: {duracion}")
-                time.sleep(1)
+            st.rerun()
+
     else:
-        # No hay sesión activa
         if st.button("🟢 Iniciar desarrollo"):
-            # Insertar nueva sesión con fin=None para marcar como activa
-            db.dev_sessions.insert_one({
+            dev_col.insert_one({
                 "inicio": datetime.now(tz),
                 "fin": None,
                 "duracion_segundos": None
