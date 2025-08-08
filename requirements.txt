@@ -3,5 +3,4 @@ pymongo
 openai
 pytz
 python-dateutil
-streamlit-js-eval
 streamlit-autorefresh
