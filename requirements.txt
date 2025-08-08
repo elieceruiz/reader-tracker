@@ -1,18 +1,5 @@
-# Core app
 streamlit
-pymongo
-pytz
-
-# Google Maps + APIs
-googlemaps
-
-# OpenAI
+pymongo[srv] 
+geopy
 openai
-
-# Live JS bridge
-streamlit-javascript
 streamlit-js-eval
-
-# Utilidades
-requests
-pandas
