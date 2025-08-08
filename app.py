@@ -1,123 +1,98 @@
 import streamlit as st
 import pymongo
-import time
-import math
-import json
 from datetime import datetime
-from streamlit.components.v1 import html
+import time
+import geopy.distance
+import requests
 
-# =============== CONFIGURACIÓN ===============
-st.set_page_config(page_title="Reader Tracker", layout="wide")
+# ====== LEER SECRETS EN MINÚSCULAS ======
+MONGO_URI = st.secrets["mongo_uri"]
+GOOGLE_MAPS_API_KEY = st.secrets["google_maps_api_key"]
 
-# Cargar secretos
-MONGO_URI = st.secrets["MONGO_URI"]
-GOOGLE_MAPS_API_KEY = st.secrets["GOOGLE_MAPS_API_KEY"]
-
-# Conexión MongoDB
+# ====== CONEXIÓN A MONGODB ======
 client = pymongo.MongoClient(MONGO_URI)
 db = client["reader_tracker"]
-lecturas_col = db["lecturas"]
+collection = db["lecturas"]
 
-# =============== FUNCIONES AUXILIARES ===============
-def haversine(lat1, lon1, lat2, lon2):
-    """Calcula la distancia en metros entre dos coordenadas."""
-    R = 6371 * 1000  # Radio de la tierra en metros
-    phi1, phi2 = math.radians(lat1), math.radians(lat2)
-    dphi = math.radians(lat2 - lat1)
-    dlambda = math.radians(lon2 - lon1)
+# ====== FUNCIONES ======
+def get_current_location():
+    """Obtiene ubicación aproximada usando la API de IP (solo para ejemplo rápido)"""
+    try:
+        res = requests.get("https://ipapi.co/json/")
+        data = res.json()
+        return (data["latitude"], data["longitude"])
+    except:
+        return None
 
-    a = math.sin(dphi/2)**2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda/2)**2
-    return 2 * R * math.atan2(math.sqrt(a), math.sqrt(1-a))
+def guardar_registro(titulo, autor, inicio, fin, coords_inicio, coords_fin):
+    duracion = (fin - inicio).total_seconds()
+    distancia = None
+    if coords_inicio and coords_fin:
+        distancia = geopy.distance.distance(coords_inicio, coords_fin).meters
+    doc = {
+        "titulo": titulo,
+        "autor": autor,
+        "inicio": inicio,
+        "fin": fin,
+        "duracion_seg": duracion,
+        "coords_inicio": coords_inicio,
+        "coords_fin": coords_fin,
+        "distancia_m": distancia
+    }
+    collection.insert_one(doc)
 
-# Guardar coordenadas del navegador
-def get_location():
-    code = """
-    <script>
-    navigator.geolocation.getCurrentPosition(
-        function(position) {
-            const coords = {
-                lat: position.coords.latitude,
-                lon: position.coords.longitude
-            };
-            window.parent.postMessage(JSON.stringify(coords), "*");
-        },
-        function(error) {
-            console.error(error);
-        }
-    );
-    </script>
-    """
-    html(code)
+def mostrar_mapa(coords_inicio, coords_fin):
+    if not coords_inicio or not coords_fin:
+        st.warning("No hay coordenadas para mostrar el mapa.")
+        return
+    url = (
+        f"https://www.google.com/maps/embed/v1/directions"
+        f"?key={GOOGLE_MAPS_API_KEY}"
+        f"&origin={coords_inicio[0]},{coords_inicio[1]}"
+        f"&destination={coords_fin[0]},{coords_fin[1]}"
+        f"&mode=walking"
+    )
+    st.markdown(f'<iframe width="100%" height="400" src="{url}"></iframe>', unsafe_allow_html=True)
 
-# =============== INTERFAZ ===============
-st.title("📖 Reader Tracker – Registro de Lectura")
+# ====== INTERFAZ STREAMLIT ======
+st.title("📖 Tracker de Lectura con Ubicación")
 
-# Estado en sesión
-if "start_time" not in st.session_state:
-    st.session_state.start_time = None
-if "start_coords" not in st.session_state:
-    st.session_state.start_coords = None
+if "inicio" not in st.session_state:
+    st.session_state.inicio = None
+    st.session_state.coords_inicio = None
 
-# Obtener ubicación inicial
-if st.button("📍 Obtener ubicación inicial"):
-    get_location()
-    st.info("Ubicación inicial solicitada, acepta en tu navegador.")
-
-# Subir portada opcional
-portada = st.file_uploader("Sube la portada o página interior del libro (opcional)", type=["jpg", "png"])
-
+# FORMULARIO DE DATOS DEL LIBRO
 titulo = st.text_input("Título del libro")
 autor = st.text_input("Autor")
 
-# Iniciar cronómetro
-if st.button("▶ Iniciar lectura"):
-    st.session_state.start_time = time.time()
-    st.session_state.start_coords = None
-    st.success("Lectura iniciada. Cuando termines, presiona 'Detener'.")
-    get_location()
+# BOTÓN PARA INICIAR LECTURA
+if st.button("Iniciar lectura"):
+    st.session_state.inicio = datetime.now()
+    st.session_state.coords_inicio = get_current_location()
+    st.success("Lectura iniciada.")
+    st.write(f"Ubicación inicial: {st.session_state.coords_inicio}")
 
-# Detener cronómetro
-if st.button("⏹ Detener lectura"):
-    if st.session_state.start_time:
-        end_time = time.time()
-        duracion = end_time - st.session_state.start_time
+# CRONÓMETRO
+if st.session_state.inicio:
+    elapsed = int((datetime.now() - st.session_state.inicio).total_seconds())
+    minutos, segundos = divmod(elapsed, 60)
+    st.metric("Tiempo leyendo", f"{minutos:02d}:{segundos:02d}")
 
-        # Obtener ubicación final
-        get_location()
+# BOTÓN PARA FINALIZAR LECTURA
+if st.session_state.inicio and st.button("Finalizar lectura"):
+    fin = datetime.now()
+    coords_fin = get_current_location()
+    guardar_registro(titulo, autor, st.session_state.inicio, fin, st.session_state.coords_inicio, coords_fin)
+    st.success("Lectura registrada.")
+    mostrar_mapa(st.session_state.coords_inicio, coords_fin)
+    st.session_state.inicio = None
+    st.session_state.coords_inicio = None
 
-        # Dummy coords si no se capturan en tiempo real
-        lat_inicio, lon_inicio = (4.6097, -74.0817)  # Bogotá
-        lat_fin, lon_fin = (4.6097, -74.0817)
-
-        distancia = haversine(lat_inicio, lon_inicio, lat_fin, lon_fin)
-        en_movimiento = distancia > 10
-
-        doc = {
-            "titulo": titulo,
-            "autor": autor,
-            "duracion_seg": duracion,
-            "fecha_inicio": datetime.fromtimestamp(st.session_state.start_time),
-            "fecha_fin": datetime.now(),
-            "lat_inicio": lat_inicio,
-            "lon_inicio": lon_inicio,
-            "lat_fin": lat_fin,
-            "lon_fin": lon_fin,
-            "distancia_m": distancia,
-            "modo": "En movimiento" if en_movimiento else "En reposo"
-        }
-        lecturas_col.insert_one(doc)
-
-        st.success(f"Lectura registrada: {round(duracion/60, 1)} min – {doc['modo']} ({round(distancia,1)} m)")
-        st.session_state.start_time = None
-    else:
-        st.warning("No hay lectura activa.")
-
-# Mostrar historial
+# HISTORIAL
 st.subheader("📜 Historial de lecturas")
-historial = list(lecturas_col.find().sort("fecha_inicio", -1))
-
-if historial:
-    for h in historial:
-        st.write(f"**{h['titulo']}** – {h['autor']} – {round(h['duracion_seg']/60,1)} min – {h['modo']} ({round(h['distancia_m'],1)} m)")
-else:
-    st.info("No hay registros aún.")
+registros = list(collection.find().sort("inicio", -1))
+for r in registros:
+    dur_min, dur_seg = divmod(int(r["duracion_seg"]), 60)
+    st.write(f"**{r['titulo']}** – {r['autor']} – {dur_min:02d}:{dur_seg:02d} min")
+    if r.get("distancia_m") and r["distancia_m"] > 0:
+        st.write(f"Distancia recorrida: {r['distancia_m']:.1f} m")
