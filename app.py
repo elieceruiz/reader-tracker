@@ -287,19 +287,36 @@ if seccion == "Tiempo de desarrollo":
 elif seccion == "Lectura con Cronómetro":
     st.header("Lectura con Cronómetro")
 
-    # Ingresar título manualmente
+    # Paso 1: ingresar título manualmente (si no hay título en sesión)
     if not st.session_state["lectura_titulo"]:
         titulo_manual = st.text_input("Ingresa manualmente el título del texto:")
         if titulo_manual:
-            st.session_state["lectura_titulo"] = titulo_manual
+            # Buscar coleccion por título
+            nombre_col = titulo_manual.lower().replace(" ", "_")
+            col = db[nombre_col]
+            # Obtener última lectura (más reciente)
+            ultima_lectura = col.find_one(sort=[("inicio", -1)])
 
-    # Páginas totales
-    if st.session_state["lectura_titulo"] and not st.session_state["lectura_paginas"]:
-        paginas_input = st.number_input("Ingresa número total de páginas del texto:", min_value=1, step=1)
-        if paginas_input > 0:
-            st.session_state["lectura_paginas"] = paginas_input
+            if ultima_lectura:
+                paginas_totales = ultima_lectura.get("paginas_totales")
+                st.info(f"Se encontró historial para '{titulo_manual}'. Último total de páginas registrado: {paginas_totales}")
+                usar_ultimo = st.checkbox("Usar el número de páginas registrado")
+                if usar_ultimo:
+                    st.session_state["lectura_titulo"] = titulo_manual
+                    st.session_state["lectura_paginas"] = paginas_totales
+                else:
+                    paginas_input = st.number_input("Ingresa número total de páginas del texto:", min_value=1, step=1)
+                    if paginas_input > 0:
+                        st.session_state["lectura_titulo"] = titulo_manual
+                        st.session_state["lectura_paginas"] = paginas_input
+            else:
+                # No hay historial
+                paginas_input = st.number_input("No se encontró historial. Ingresa número total de páginas del texto:", min_value=1, step=1)
+                if paginas_input > 0:
+                    st.session_state["lectura_titulo"] = titulo_manual
+                    st.session_state["lectura_paginas"] = paginas_input
 
-    # Mostrar datos y controles de lectura
+    # Mostrar datos y controles de lectura si ya hay título y páginas
     if st.session_state["lectura_titulo"] and st.session_state["lectura_paginas"]:
         st.markdown(f"**Título:** {st.session_state['lectura_titulo']}")
         st.markdown(f"**Páginas totales:** {st.session_state['lectura_paginas']}")
