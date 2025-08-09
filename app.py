@@ -12,10 +12,20 @@ st.title("📚 Seguimiento de Lectura")
 tz = pytz.timezone("America/Bogota")
 
 # Conexión a MongoDB
-MONGO_URI = st.secrets["mongo_uri"]  # O reemplaza con tu cadena directa
+MONGO_URI = st.secrets["mongo_uri"]
 client = MongoClient(MONGO_URI)
 db = client["lecturas_db"]
 coleccion = db["lecturas"]
+
+# === FUNCIONES ===
+def obtener_ultima_pagina(libro):
+    ultimo = coleccion.find_one(
+        {"libro": libro, "en_curso": False},
+        sort=[("fin", -1)]
+    )
+    if ultimo:
+        return ultimo.get("pagina_fin", ultimo["pagina_inicio"])
+    return 1
 
 # === VERIFICAR SI HAY LECTURA ACTIVA ===
 evento = coleccion.find_one({"en_curso": True})
@@ -32,6 +42,7 @@ if evento:
     st.info(f"Iniciado a las {hora_inicio.strftime('%H:%M:%S')}")
 
     cronometro = st.empty()
+    pagina_fin = st.number_input("Página en la que terminas", min_value=pagina_inicio, max_value=total_paginas, step=1)
     stop_button = st.button("⏹️ Finalizar lectura")
 
     for i in range(segundos_transcurridos, segundos_transcurridos + 100000):
@@ -43,38 +54,54 @@ if evento:
                     "$set": {
                         "fin": ahora,
                         "en_curso": False,
+                        "pagina_fin": pagina_fin,
                         "duracion_segundos": (ahora - hora_inicio).total_seconds()
                     }
                 }
             )
             st.success("✅ Lectura finalizada.")
-            time.sleep(1)  # Pausa breve para mostrar el mensaje
-            st.rerun()  # Restablecer estado
+            time.sleep(1)
+            st.rerun()
 
         duracion = str(timedelta(seconds=i))
         cronometro.markdown(f"### ⏱️ Tiempo leyendo: {duracion}")
         time.sleep(1)
 
 else:
-    # === FORMULARIO DE INICIO ===
-    with st.form("iniciar_lectura"):
-        libro = st.text_input("📚 Nombre del libro")
-        total_paginas = st.number_input("Número total de páginas", min_value=1, step=1)
-        pagina_inicio = st.number_input("Página desde donde comienzas", min_value=1, step=1)
-        iniciar = st.form_submit_button("🟢 Iniciar lectura")
+    # === SELECCIÓN DE LIBRO O NUEVO ===
+    libros_guardados = sorted({e["libro"] for e in coleccion.find()})
+    opcion = st.selectbox("📚 Selecciona un libro o elige 'Nuevo libro':", ["Nuevo libro"] + libros_guardados)
 
-        if iniciar:
-            libro = libro.strip()
-            if not libro:
-                st.error("El nombre del libro no puede estar vacío.")
-            else:
-                # Verificar si el libro ya está en curso
-                existente = coleccion.find_one({"libro": libro, "en_curso": True})
-                if existente:
-                    st.warning(f"⚠️ El libro **{libro}** ya está en curso desde {existente['inicio'].astimezone(tz).strftime('%Y-%m-%d %H:%M:%S')}")
+    if opcion != "Nuevo libro":
+        ultima_pag = obtener_ultima_pagina(opcion)
+        if st.button(f"🟢 Continuar lectura de '{opcion}'"):
+            total_paginas = coleccion.find_one({"libro": opcion})["total_paginas"]
+            coleccion.insert_one({
+                "libro": opcion,
+                "total_paginas": total_paginas,
+                "pagina_inicio": ultima_pag + 1,
+                "inicio": datetime.now(tz),
+                "en_curso": True
+            })
+            st.success(f"Lectura de **{opcion}** reanudada desde la página {ultima_pag + 1}.")
+            time.sleep(1)
+            st.rerun()
+    else:
+        # NUEVO LIBRO
+        with st.form("nueva_lectura"):
+            libro = st.text_input("📚 Nombre del libro")
+            total_paginas = st.number_input("Número total de páginas", min_value=1, step=1)
+            pagina_inicio = st.number_input("Página desde donde comienzas", min_value=1, step=1)
+            iniciar = st.form_submit_button("🟢 Iniciar lectura")
+
+            if iniciar:
+                if not libro.strip():
+                    st.error("El nombre del libro no puede estar vacío.")
+                elif coleccion.find_one({"libro": libro, "en_curso": True}):
+                    st.warning(f"⚠️ El libro **{libro}** ya está en curso.")
                 else:
                     coleccion.insert_one({
-                        "libro": libro,
+                        "libro": libro.strip(),
                         "total_paginas": total_paginas,
                         "pagina_inicio": pagina_inicio,
                         "inicio": datetime.now(tz),
@@ -104,6 +131,7 @@ if historial:
             "Fin": fin,
             "Duración": duracion,
             "Pág. Inicio": e["pagina_inicio"],
+            "Pág. Fin": e.get("pagina_fin", ""),
             "Total Páginas": e["total_paginas"]
         }
         data.append(fila)
