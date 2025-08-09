@@ -3,3 +3,4 @@ streamlit-autorefresh
 pymongo
 pytz
 folium
+streamlit-folium
