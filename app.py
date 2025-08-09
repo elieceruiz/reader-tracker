@@ -125,6 +125,12 @@ if libros_historial:
 
     historial = list(coleccion.find(filtro_query).sort("inicio", -1))
 
+    # Título dinámico
+    if libro_filtro == "Todos":
+        st.markdown("### 📜 Historial de todas las lecturas")
+    else:
+        st.markdown(f"### 📜 Historial de **{libro_filtro}**")
+
     if historial:
         data = []
         for e in historial:
@@ -136,7 +142,6 @@ if libros_historial:
             duracion = f"{horas:02d}h {minutos:02d}m {segundos:02d}s"
 
             fila = {
-                "Libro": e["libro"],
                 "Inicio": inicio,
                 "Fin": fin,
                 "Duración": duracion,
@@ -144,6 +149,11 @@ if libros_historial:
                 "Pág. Fin": e.get("pagina_fin", ""),
                 "Total Páginas": e["total_paginas"]
             }
+
+            # Solo mostrar columna "Libro" si el filtro es "Todos"
+            if libro_filtro == "Todos":
+                fila["Libro"] = e["libro"]
+
             data.append(fila)
 
         st.dataframe(data, use_container_width=True)
