@@ -48,7 +48,8 @@ if evento:
                 }
             )
             st.success("✅ Lectura finalizada.")
-            st.rerun()
+            time.sleep(1)  # Pausa breve para mostrar el mensaje
+            st.rerun()  # Restablecer estado
 
         duracion = str(timedelta(seconds=i))
         cronometro.markdown(f"### ⏱️ Tiempo leyendo: {duracion}")
@@ -63,18 +64,25 @@ else:
         iniciar = st.form_submit_button("🟢 Iniciar lectura")
 
         if iniciar:
-            if libro.strip():
-                coleccion.insert_one({
-                    "libro": libro.strip(),
-                    "total_paginas": total_paginas,
-                    "pagina_inicio": pagina_inicio,
-                    "inicio": datetime.now(tz),
-                    "en_curso": True
-                })
-                st.success(f"Lectura de **{libro}** iniciada.")
-                st.rerun()
-            else:
+            libro = libro.strip()
+            if not libro:
                 st.error("El nombre del libro no puede estar vacío.")
+            else:
+                # Verificar si el libro ya está en curso
+                existente = coleccion.find_one({"libro": libro, "en_curso": True})
+                if existente:
+                    st.warning(f"⚠️ El libro **{libro}** ya está en curso desde {existente['inicio'].astimezone(tz).strftime('%Y-%m-%d %H:%M:%S')}")
+                else:
+                    coleccion.insert_one({
+                        "libro": libro,
+                        "total_paginas": total_paginas,
+                        "pagina_inicio": pagina_inicio,
+                        "inicio": datetime.now(tz),
+                        "en_curso": True
+                    })
+                    st.success(f"Lectura de **{libro}** iniciada.")
+                    time.sleep(1)
+                    st.rerun()
 
 # === HISTORIAL DE LECTURAS ===
 st.subheader("📜 Historial de Lecturas")
