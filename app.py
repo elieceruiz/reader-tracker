@@ -20,11 +20,17 @@ tz = pytz.timezone("America/Bogota")
 def now_utc():
     return datetime.utcnow().replace(tzinfo=timezone.utc)
 
+def ensure_aware_utc(dt):
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
 def to_local_str(dt):
     if not dt:
         return "-"
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
+    dt = ensure_aware_utc(dt)
     return dt.astimezone(tz).strftime("%Y-%m-%d %H:%M:%S")
 
 def secs_to_hms(s):
@@ -40,24 +46,25 @@ def ensure_oid(x):
     except Exception:
         return x
 
-def haversine_km(a,b):
+def haversine_km(a, b):
     lat1, lon1 = a
     lat2, lon2 = b
     R = 6371.0
-    dlat = math.radians(lat2-lat1)
-    dlon = math.radians(lon2-lon1)
-    aa = math.sin(dlat/2)**2 + math.cos(math.radians(lat1))*math.cos(math.radians(lat2))*math.sin(dlon/2)**2
-    c = 2*math.asin(math.sqrt(aa))
-    return R*c
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    aa = math.sin(dlat/2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon/2)**2
+    c = 2 * math.asin(math.sqrt(aa))
+    return R * c
 
-def route_distance_km(r):
-    if not r or len(r) < 2:
+def route_distance_km(route):
+    if not route or len(route) < 2:
         return 0.0
     s = 0.0
-    for i in range(len(r)-1):
-        s += haversine_km((r[i]["lat"], r[i]["lng"]), (r[i+1]["lat"], r[i+1]["lng"]))
+    for i in range(len(route) - 1):
+        s += haversine_km((route[i]["lat"], route[i]["lng"]), (route[i+1]["lat"], route[i+1]["lng"]))
     return s
 
+# CONFIG
 mongo_uri = st.secrets.get("mongo_uri")
 google_maps_api_key = st.secrets.get("google_maps_api_key", "")
 
@@ -76,31 +83,48 @@ db = client["reader_tracker"]
 col = db["sessions"]
 books_col = db["books"]
 
+# Híbrido: cada X segundos o X metros
 HYBRID_SECONDS = 30
-HYBRID_METERS = 20
+HYBRID_METERS = 20  # metros
 
+# session_state init + recover active session from DB
 if "initialized" not in st.session_state:
     st.session_state.initialized = True
     st.session_state.sid = None
     st.session_state.start = None
     st.session_state.tipo = None
     st.session_state.title = None
-    st.session_state.last_save_time = None
-    st.session_state.last_save_point = None
     st.session_state.route = []
     st.session_state.distance_km = 0.0
+    st.session_state.last_save_time = None
+    st.session_state.last_save_point = None
+
     running = col.find_one({"en_curso": True})
     if running:
         st.session_state.sid = str(running["_id"])
-        st.session_state.start = running["inicio"]
+        st.session_state.start = ensure_aware_utc(running["inicio"])
         st.session_state.tipo = running.get("tipo", "lectura")
         st.session_state.title = running.get("title")
         st.session_state.route = running.get("route", []) or []
         st.session_state.distance_km = float(running.get("distance_km", 0.0) or 0.0)
-        st.session_state.last_save_time = running.get("last_save_time")
+        st.session_state.last_save_time = ensure_aware_utc(running.get("last_save_time"))
         st.session_state.last_save_point = running.get("last_save_point")
 
+# DB helpers
 def start_session(tipo, title=None, page_start=1):
+    # prevent double-insert
+    existing = col.find_one({"tipo": tipo, "en_curso": True})
+    if existing:
+        # restore into session_state
+        st.session_state.sid = str(existing["_id"])
+        st.session_state.start = ensure_aware_utc(existing["inicio"])
+        st.session_state.tipo = existing.get("tipo")
+        st.session_state.title = existing.get("title")
+        st.session_state.route = existing.get("route", []) or []
+        st.session_state.distance_km = float(existing.get("distance_km", 0.0) or 0.0)
+        st.warning("Ya hay una sesión en curso; retomando esa sesión.")
+        return st.session_state.sid
+
     doc = {
         "tipo": tipo,
         "title": title,
@@ -118,119 +142,144 @@ def start_session(tipo, title=None, page_start=1):
     }
     res = col.insert_one(doc)
     st.session_state.sid = str(res.inserted_id)
-    st.session_state.start = doc["inicio"]
+    st.session_state.start = ensure_aware_utc(doc["inicio"])
     st.session_state.tipo = tipo
     st.session_state.title = title
     st.session_state.route = []
     st.session_state.distance_km = 0.0
-    st.session_state.last_save_time = doc["last_save_time"]
+    st.session_state.last_save_time = ensure_aware_utc(doc["last_save_time"])
     st.session_state.last_save_point = None
+    return st.session_state.sid
 
 def hybrid_save_point(sid, lat, lng):
-    doc = col.find_one({"_id": ensure_oid(sid)})
+    sid_oid = ensure_oid(sid)
+    doc = col.find_one({"_id": sid_oid})
     if not doc:
         return
     now = now_utc()
-    last_time = doc.get("last_save_time")
+    last_time = ensure_aware_utc(doc.get("last_save_time"))
     last_point = doc.get("last_save_point")
     should_save = False
     if not last_point:
         should_save = True
     else:
-        dist = haversine_km((last_point["lat"], last_point["lng"]), (lat,lng))*1000.0
-        if dist >= HYBRID_METERS:
+        dist_m = haversine_km((last_point["lat"], last_point["lng"]), (lat, lng)) * 1000.0
+        if dist_m >= HYBRID_METERS:
             should_save = True
     if not should_save and last_time:
-        delta = (now - last_time).total_seconds()
-        if delta >= HYBRID_SECONDS:
+        delta_s = (now - last_time).total_seconds()
+        if delta_s >= HYBRID_SECONDS:
             should_save = True
     if should_save:
-        col.update_one({"_id": ensure_oid(sid)}, {"$push": {"route": {"lat": lat, "lng": lng, "t": now}}, "$set": {"last_save_time": now, "last_save_point": {"lat": lat, "lng": lng}}})
-        doc = col.find_one({"_id": ensure_oid(sid)})
-        distance = route_distance_km(doc.get("route", []))
-        col.update_one({"_id": ensure_oid(sid)}, {"$set": {"distance_km": distance}})
-        st.session_state.route = doc.get("route", []) or []
-        st.session_state.distance_km = float(distance)
+        col.update_one(
+            {"_id": sid_oid},
+            {
+                "$push": {"route": {"lat": lat, "lng": lng, "t": now}},
+                "$set": {"last_save_time": now, "last_save_point": {"lat": lat, "lng": lng}}
+            }
+        )
+        doc2 = col.find_one({"_id": sid_oid})
+        dist = route_distance_km(doc2.get("route", []))
+        col.update_one({"_id": sid_oid}, {"$set": {"distance_km": dist}})
+        st.session_state.route = doc2.get("route", []) or []
+        st.session_state.distance_km = float(dist)
 
 def process_query_params():
-    qp = st.experimental_get_query_params()
-    lat = qp.get("lat", [None])[0]
-    lng = qp.get("lng", [None])[0]
-    sid = qp.get("sid", [None])[0]
+    params = st.query_params  # <- updated API
+    lat = params.get("lat", [None])[0]
+    lng = params.get("lng", [None])[0]
+    sid = params.get("sid", [None])[0]
     if lat and lng and sid:
         try:
             latf = float(lat); lngf = float(lng)
             hybrid_save_point(sid, latf, lngf)
-        except:
+        except Exception:
             pass
 
 process_query_params()
 
+# UI
+st.set_page_config(page_title="Reader Tracker", layout="wide")
 st.title("Reader Tracker")
 
 seccion = st.sidebar.selectbox("Sección", ["Lectura", "Desarrollo", "Mapa en vivo", "Historial", "Configuración"])
 
-active = st.session_state.sid is not None
-if active:
+# autorefresh only if an active session exists
+if st.session_state.sid is not None:
     st_autorefresh(interval=1000, key="live_refresh")
 
+# SECCIÓN: Lectura
 if seccion == "Lectura":
     st.header("Lectura")
     if not st.session_state.sid:
         title = st.text_input("Título")
         page_start = st.number_input("Página inicio", min_value=1, value=1)
         if st.button("Iniciar lectura"):
-            if not title.strip():
+            if not title or not title.strip():
                 st.warning("Ingresa título")
             else:
                 start_session("lectura", title.strip(), page_start)
+                st.experimental_rerun()
     else:
-        dur = int((now_utc() - st.session_state.start).total_seconds())
-        st.metric("Duración", secs_to_hms(dur))
-        st.markdown(f"**Distancia (guardada):** {st.session_state.distance_km:.3f} km")
-        st.number_input("Página actual", min_value=1, value=st.session_state.get("page_end", st.session_state.get("page_start",1)), key="page_now")
-        if st.button("Finalizar lectura"):
-            pages = st.session_state.get("page_now", 0)
-            sid = ensure_oid(st.session_state.sid)
-            doc = col.find_one({"_id": sid})
-            duration = int((now_utc() - doc["inicio"]).total_seconds())
-            col.update_one({"_id": sid}, {"$set": {"fin": now_utc(), "en_curso": False, "page_end": pages, "pages_session": pages - doc.get("page_start",1) + 0, "duration_sec": duration}})
-            # update book summary
-            title = doc.get("title")
-            if title:
-                book = books_col.find_one({"name": title}) or {}
-                pages_prev = book.get("pages_accum", 0)
-                books_col.update_one({"name": title}, {"$set": {"name": title, "pages_accum": pages_prev + (pages - doc.get("page_start",1) + 0)}}, upsert=True)
-            st.session_state.sid = None
-            st.session_state.start = None
-            st.session_state.route = []
-            st.session_state.distance_km = 0.0
-            st.success("Lectura finalizada y guardada.")
+        # show only if current session is tipo lectura
+        sid = st.session_state.sid
+        doc = col.find_one({"_id": ensure_oid(sid)})
+        if doc and doc.get("en_curso") and doc.get("tipo") == "lectura":
+            start_dt = ensure_aware_utc(doc["inicio"])
+            elapsed = int((now_utc() - start_dt).total_seconds())
+            st.metric("Duración", secs_to_hms(elapsed))
+            st.markdown(f"**Distancia guardada:** {st.session_state.distance_km:.3f} km")
+            page_now = st.number_input("Página actual", min_value=1, value=int(doc.get("page_start",1)), key="page_now")
+            if st.button("Finalizar lectura"):
+                pages = int(st.session_state.get("page_now", page_now))
+                duration = int((now_utc() - start_dt).total_seconds())
+                col.update_one({"_id": ensure_oid(sid)}, {"$set": {"fin": now_utc(), "en_curso": False, "page_end": pages, "pages_session": pages - doc.get("page_start",1) + 0, "duration_sec": duration}})
+                # update book accum
+                title = doc.get("title")
+                if title:
+                    book = books_col.find_one({"name": title}) or {}
+                    prev = book.get("pages_accum", 0)
+                    books_col.update_one({"name": title}, {"$set": {"name": title, "pages_accum": prev + (pages - doc.get("page_start",1) + 0)}}, upsert=True)
+                # clear state
+                st.session_state.sid = None
+                st.session_state.start = None
+                st.session_state.route = []
+                st.session_state.distance_km = 0.0
+                st.success("Lectura finalizada y guardada.")
+        else:
+            st.info("No hay una sesión de lectura en curso.")
 
+# SECCIÓN: Desarrollo
 elif seccion == "Desarrollo":
     st.header("Desarrollo")
     if not st.session_state.sid:
         name = st.text_input("Nombre de la tarea", value="Trabajo")
         if st.button("Iniciar desarrollo"):
             start_session("dev", name, 0)
+            st.experimental_rerun()
     else:
-        dur = int((now_utc() - st.session_state.start).total_seconds())
-        st.metric("Duración", secs_to_hms(dur))
-        if st.button("Finalizar desarrollo"):
-            sid = ensure_oid(st.session_state.sid)
-            doc = col.find_one({"_id": sid})
-            duration = int((now_utc() - doc["inicio"]).total_seconds())
-            col.update_one({"_id": sid}, {"$set": {"fin": now_utc(), "en_curso": False, "duration_sec": duration}})
-            st.session_state.sid = None
-            st.session_state.start = None
-            st.success("Desarrollo finalizado y guardado.")
+        sid = st.session_state.sid
+        doc = col.find_one({"_id": ensure_oid(sid)})
+        if doc and doc.get("en_curso") and doc.get("tipo") == "dev":
+            elapsed = int((now_utc() - ensure_aware_utc(doc["inicio"])).total_seconds())
+            st.metric("Duración", secs_to_hms(elapsed))
+            if st.button("Finalizar desarrollo"):
+                duration = int((now_utc() - ensure_aware_utc(doc["inicio"])).total_seconds())
+                col.update_one({"_id": ensure_oid(sid)}, {"$set": {"fin": now_utc(), "en_curso": False, "duration_sec": duration}})
+                st.session_state.sid = None
+                st.session_state.start = None
+                st.success("Desarrollo finalizado y guardado.")
+        else:
+            st.info("No hay una sesión de desarrollo en curso.")
 
+# SECCIÓN: Mapa en vivo
 elif seccion == "Mapa en vivo":
     st.header("Mapa en vivo")
     if not google_maps_api_key:
         st.error("Falta google_maps_api_key en st.secrets")
     else:
         SID = st.session_state.sid or ""
+        # JS must use doubled braces for JS object literals inside f-string
         js = f"""
 <!DOCTYPE html>
 <html>
@@ -245,7 +294,7 @@ elif seccion == "Mapa en vivo":
 <script>
 let map, poly, path=[];
 function initMap(){{
-  map = new google.maps.Map(document.getElementById('map'), {{zoom:17, center: {{lat:4.65,lng:-74.05}}}});
+  map = new google.maps.Map(document.getElementById('map'), {{zoom:17, center: {{lat:4.65,lng:-74.05}} }});
   poly = new google.maps.Polyline({{strokeColor:'#FF0000', strokeOpacity:1.0, strokeWeight:3, map:map}});
   if(navigator.geolocation){{
     navigator.geolocation.getCurrentPosition(p => {{
@@ -286,6 +335,7 @@ window.onload = initMap;
         if st.session_state.route:
             st.markdown(f"Puntos guardados: {len(st.session_state.route)} — distancia guardada: {st.session_state.distance_km:.3f} km")
 
+# SECCIÓN: Historial
 elif seccion == "Historial":
     st.header("Historial")
     rows = list(col.find().sort("inicio", -1).limit(200))
@@ -302,18 +352,20 @@ elif seccion == "Historial":
         st.subheader("Ver ruta histórica")
         sesiones_ruta = list(col.find({"route": {"$exists": True, "$ne": []}}).sort("inicio",-1).limit(200))
         labels = [f"{to_local_str(s['inicio'])} — {s.get('title','-')} — {s.get('distance_km',0.0):.3f} km" for s in sesiones_ruta]
-        sel = st.selectbox("Elige sesión", [""]+labels)
+        sel = st.selectbox("Elige sesión", [""] + labels)
         if sel:
-            idx = labels.index(sel)-1
-            sdoc = sesiones_ruta[idx]
-            coords = [(p["lat"], p["lng"]) for p in sdoc.get("route",[])]
-            if coords:
-                m = folium.Map(location=coords[0], zoom_start=15)
-                folium.PolyLine(coords, color="red", weight=3).add_to(m)
-                folium.Marker(coords[0], popup="Inicio").add_to(m)
-                folium.Marker(coords[-1], popup="Fin").add_to(m)
-                st_folium(m, width=700, height=450)
+            idx = labels.index(sel) - 1
+            if idx >= 0:
+                sdoc = sesiones_ruta[idx]
+                coords = [(p["lat"], p["lng"]) for p in sdoc.get("route", [])]
+                if coords:
+                    m = folium.Map(location=coords[0], zoom_start=15)
+                    folium.PolyLine(coords, color="red", weight=3).add_to(m)
+                    folium.Marker(coords[0], popup="Inicio").add_to(m)
+                    folium.Marker(coords[-1], popup="Fin").add_to(m)
+                    st_folium(m, width=700, height=450)
 
+# SECCIÓN: Configuración
 elif seccion == "Configuración":
     st.header("Configuración")
     st.write({"mongo_uri": bool(mongo_uri), "google_maps_api_key": bool(google_maps_api_key)})
