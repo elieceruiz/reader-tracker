@@ -1,6 +1,4 @@
 streamlit
-streamlit-autorefresh
 pymongo
 pytz
-folium
-streamlit-folium
+st-autorefresh
