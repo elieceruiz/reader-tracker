@@ -113,29 +113,41 @@ else:
 
 # === HISTORIAL DE LECTURAS ===
 st.subheader("📜 Historial de Lecturas")
-historial = list(coleccion.find({"en_curso": False}).sort("inicio", -1))
 
-if historial:
-    data = []
-    for e in historial:
-        inicio = e["inicio"].astimezone(tz).strftime('%Y-%m-%d %H:%M:%S')
-        fin = e["fin"].astimezone(tz).strftime('%Y-%m-%d %H:%M:%S')
-        total_segundos = int((e["fin"] - e["inicio"]).total_seconds())
-        horas, resto = divmod(total_segundos, 3600)
-        minutos, segundos = divmod(resto, 60)
-        duracion = f"{horas:02d}h {minutos:02d}m {segundos:02d}s"
+# Lista de libros para filtrar
+libros_historial = sorted({e["libro"] for e in coleccion.find({"en_curso": False})})
+if libros_historial:
+    libro_filtro = st.selectbox("Filtrar por libro:", ["Todos"] + libros_historial)
 
-        fila = {
-            "Libro": e["libro"],
-            "Inicio": inicio,
-            "Fin": fin,
-            "Duración": duracion,
-            "Pág. Inicio": e["pagina_inicio"],
-            "Pág. Fin": e.get("pagina_fin", ""),
-            "Total Páginas": e["total_paginas"]
-        }
-        data.append(fila)
+    filtro_query = {"en_curso": False}
+    if libro_filtro != "Todos":
+        filtro_query["libro"] = libro_filtro
 
-    st.dataframe(data, use_container_width=True)
+    historial = list(coleccion.find(filtro_query).sort("inicio", -1))
+
+    if historial:
+        data = []
+        for e in historial:
+            inicio = e["inicio"].astimezone(tz).strftime('%Y-%m-%d %H:%M:%S')
+            fin = e["fin"].astimezone(tz).strftime('%Y-%m-%d %H:%M:%S')
+            total_segundos = int((e["fin"] - e["inicio"]).total_seconds())
+            horas, resto = divmod(total_segundos, 3600)
+            minutos, segundos = divmod(resto, 60)
+            duracion = f"{horas:02d}h {minutos:02d}m {segundos:02d}s"
+
+            fila = {
+                "Libro": e["libro"],
+                "Inicio": inicio,
+                "Fin": fin,
+                "Duración": duracion,
+                "Pág. Inicio": e["pagina_inicio"],
+                "Pág. Fin": e.get("pagina_fin", ""),
+                "Total Páginas": e["total_paginas"]
+            }
+            data.append(fila)
+
+        st.dataframe(data, use_container_width=True)
+    else:
+        st.info("No hay registros para este libro.")
 else:
     st.info("No hay lecturas finalizadas.")
