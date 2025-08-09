@@ -263,7 +263,6 @@ elif seccion == "Lectura con Cronómetro":
     st.header("Lectura con Cronómetro")
 
     if not st.session_state["lectura_en_curso"]:
-        # Input título con valor inicial desde sesión
         titulo = st.text_input(
             "Ingresa el título del texto:",
             value=st.session_state.get("lectura_titulo", ""),
@@ -272,7 +271,6 @@ elif seccion == "Lectura con Cronómetro":
 
         if titulo:
             col = coleccion_por_titulo(titulo)
-            st.session_state["lectura_titulo"] = titulo  # Guardar título en sesión
 
             # Checkbox para indicar si ya tienes el libro guardado
             ya_guardado = st.checkbox("¿Ya tienes este libro guardado en el sistema?", key="checkbox_guardado")
@@ -283,7 +281,6 @@ elif seccion == "Lectura con Cronómetro":
             if ya_guardado:
                 lecturas_guardadas = list(col.find({"fin": {"$ne": None}}))
                 if lecturas_guardadas:
-                    # Ordenar por página final asc y fecha inicio
                     lecturas_guardadas.sort(key=lambda x: (x.get("pagina_final", 0), x.get("inicio")), reverse=False)
                     opciones = [
                         f"Pág. {l.get('pagina_final', '?')} - Inició: {to_datetime_local(l['inicio']).strftime('%Y-%m-%d')}"
