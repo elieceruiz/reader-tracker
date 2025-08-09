@@ -263,12 +263,46 @@ elif seccion == "Lectura con Cronómetro":
     st.header("Lectura con Cronómetro")
 
     if not st.session_state["lectura_en_curso"]:
-        titulo = st.text_input("Ingresa el título del texto:", key="lectura_titulo")
+        # Input título con valor inicial desde sesión
+        titulo = st.text_input(
+            "Ingresa el título del texto:",
+            value=st.session_state.get("lectura_titulo", ""),
+            key="lectura_titulo"
+        )
 
         if titulo:
             col = coleccion_por_titulo(titulo)
-            ultima_lectura = col.find_one(sort=[("inicio", -1)])
-            paginas_totales = ultima_lectura.get("paginas_totales") if ultima_lectura else None
+            st.session_state["lectura_titulo"] = titulo  # Guardar título en sesión
+
+            # Checkbox para indicar si ya tienes el libro guardado
+            ya_guardado = st.checkbox("¿Ya tienes este libro guardado en el sistema?", key="checkbox_guardado")
+
+            pagina_seleccionada = None
+            lectura_seleccionada_id = None
+
+            if ya_guardado:
+                lecturas_guardadas = list(col.find({"fin": {"$ne": None}}))
+                if lecturas_guardadas:
+                    # Ordenar por página final asc y fecha inicio
+                    lecturas_guardadas.sort(key=lambda x: (x.get("pagina_final", 0), x.get("inicio")), reverse=False)
+                    opciones = [
+                        f"Pág. {l.get('pagina_final', '?')} - Inició: {to_datetime_local(l['inicio']).strftime('%Y-%m-%d')}"
+                        for l in lecturas_guardadas
+                    ]
+
+                    seleccion = st.selectbox("Selecciona la lectura donde la dejaste:", opciones, key="select_lecturas")
+                    index = opciones.index(seleccion)
+                    lectura_seleccionada = lecturas_guardadas[index]
+                    pagina_seleccionada = lectura_seleccionada.get("pagina_final", 1)
+                    lectura_seleccionada_id = lectura_seleccionada["_id"]
+                else:
+                    st.info("No se encontraron lecturas guardadas para este libro.")
+
+            if not ya_guardado:
+                ultima_lectura = col.find_one(sort=[("inicio", -1)])
+                paginas_totales = ultima_lectura.get("paginas_totales") if ultima_lectura else None
+            else:
+                paginas_totales = None
 
             if paginas_totales is not None:
                 st.session_state["lectura_paginas"] = paginas_totales
@@ -284,7 +318,7 @@ elif seccion == "Lectura con Cronómetro":
                 st.session_state["lectura_paginas"] = paginas_manual
                 st.write(f"Páginas totales: {paginas_manual}")
 
-            pagina_inicial = st.number_input(
+            pagina_inicial = pagina_seleccionada or st.number_input(
                 "Página desde donde empiezas la lectura:",
                 min_value=1,
                 max_value=st.session_state["lectura_paginas"],
@@ -297,19 +331,17 @@ elif seccion == "Lectura con Cronómetro":
             if st.button("▶️ Iniciar lectura"):
                 st.session_state["lectura_inicio"] = datetime.now(tz)
                 st.session_state["lectura_en_curso"] = True
-                st.session_state["cronometro_running"] = True
-                st.session_state["cronometro_segundos"] = 0
-                iniciar_lectura(
-                    st.session_state["lectura_titulo"],
-                    st.session_state["lectura_paginas"]
-                )
+                if lectura_seleccionada_id:
+                    st.session_state["lectura_id"] = lectura_seleccionada_id
+                else:
+                    iniciar_lectura(st.session_state["lectura_titulo"], st.session_state["lectura_paginas"])
                 st.rerun()
+
     else:
         st.markdown("### Lectura en curso...")
-        st.markdown(f"⏰ Tiempo transcurrido: {timedelta(seconds=st.session_state['cronometro_segundos'])}")
         if st.session_state["cronometro_running"]:
+            st.markdown(f"⏰ Tiempo transcurrido: {timedelta(seconds=st.session_state['cronometro_segundos'])}")
             st.session_state["cronometro_segundos"] += 1
-            st.experimental_rerun = None
             st.rerun()
         else:
             st.markdown(f"⏰ Tiempo detenido: {timedelta(seconds=st.session_state['cronometro_segundos'])}")
