@@ -305,7 +305,7 @@ if mensaje_js and isinstance(mensaje_js, dict) and mensaje_js.get("type") == "gu
         finalizar_lectura(duracion_segundos=segundos_transcurridos)
 
     st.success(f"Ruta recibida y guardada ({distancia_total:.2f} km).")
-    st.experimental_rerun()
+    st.rerun()
 
 # -----------------------
 # APP Layout: selector de secciones
@@ -331,7 +331,7 @@ if seccion == "Tiempo de desarrollo":
             if st.button("⏹️ Finalizar desarrollo"):
                 finalizar_desarrollo_db()
                 st.success("Desarrollo finalizado.")
-                st.experimental_rerun()
+                st.rerun()
         with col2:
             st.write("")  # placeholder
     else:
@@ -342,7 +342,7 @@ if seccion == "Tiempo de desarrollo":
                 proyecto = proyecto.strip() or "Trabajo"
                 iniciar_desarrollo_db(proyecto)
                 st.success(f"Desarrollo iniciado para: {proyecto}")
-                st.experimental_rerun()
+                st.rerun()
 
     st.markdown("---")
     st.subheader("Historial (Desarrollos)")
@@ -396,7 +396,7 @@ elif seccion == "Lectura con Cronómetro":
                 )
                 finalizar_lectura(duracion_segundos=segundos_transcurridos)
                 st.success("Lectura finalizada y guardada.")
-                st.experimental_rerun()
+                st.rerun()
         with col2:
             nueva_pag = st.number_input("Actualizar página actual:", min_value=1,
                                        max_value=st.session_state.get("lectura_paginas", 10000),
@@ -456,7 +456,7 @@ elif seccion == "Lectura con Cronómetro":
                 st.session_state["lectura_en_curso"] = True
                 iniciar_lectura(titulo, st.session_state["lectura_paginas"], pagina_inicial=st.session_state["lectura_pagina_actual"])
                 st.success("Lectura iniciada.")
-                st.experimental_rerun()
+                st.rerun()
 
 # -----------------------
 # MÓDULO 3: Mapa en vivo
