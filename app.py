@@ -86,6 +86,7 @@ else:
             st.success(f"Lectura de **{opcion}** reanudada desde la página {ultima_pag + 1}.")
             time.sleep(1)
             st.rerun()
+
     elif opcion == "Nuevo libro":
         # NUEVO LIBRO
         with st.form("nueva_lectura"):
@@ -125,11 +126,9 @@ if libros_historial:
         filtro_query = {"en_curso": False, "libro": libro_filtro}
         historial = list(coleccion.find(filtro_query).sort("inicio", -1))
 
-        st.markdown(f"### 📜 Historial de **{libro_filtro}**")
-
         if historial:
             total_sesiones = len(historial)
-            total_paginas = historial[0]["total_paginas"]  # mismo para todas las sesiones
+            total_paginas = historial[0]["total_paginas"]
             paginas_leidas = 0
             total_segundos = 0
 
@@ -139,7 +138,7 @@ if libros_historial:
                 fin = e["fin"].astimezone(tz).strftime('%Y-%m-%d %H:%M:%S')
                 duracion_seg = int((e["fin"] - e["inicio"]).total_seconds())
 
-                # Páginas leídas (inclusive)
+                # Páginas leídas
                 pag_inicio = e["pagina_inicio"]
                 pag_fin = e.get("pagina_fin", pag_inicio)
                 leidas_sesion = max(pag_fin - pag_inicio + 1, 0)
@@ -156,8 +155,7 @@ if libros_historial:
                     "Fin": fin,
                     "Duración": duracion,
                     "Pág. Inicio": pag_inicio,
-                    "Pág. Fin": pag_fin,
-                    "Total Páginas": total_paginas
+                    "Pág. Fin": pag_fin
                 }
                 data.append(fila)
 
@@ -166,16 +164,19 @@ if libros_historial:
             promedio_seg_por_pagina = total_segundos / paginas_leidas if paginas_leidas > 0 else 0
             promedio_min_por_pagina = promedio_seg_por_pagina / 60
 
-            # Mostrar resumen con total de páginas
+            # --- Resumen limpio ---
+            st.markdown(f"### 📜 Historial de *{libro_filtro}*")
             st.markdown(
-                f"**📚 Total:** {total_paginas} pág. &nbsp;&nbsp;|&nbsp;&nbsp; "
-                f"**📊 Sesiones:** {total_sesiones} &nbsp;&nbsp;|&nbsp;&nbsp; "
-                f"**✅ Leídas:** {paginas_leidas} pág. &nbsp;&nbsp;|&nbsp;&nbsp; "
-                f"**📖 Restantes:** {paginas_restantes} pág. &nbsp;&nbsp;|&nbsp;&nbsp; "
-                f"**⏱ Promedio/pág:** {promedio_min_por_pagina:.2f} min"
+                f"**📄 Total:** {total_paginas} pág. &nbsp;|&nbsp; "
+                f"✅ **Leídas:** {paginas_leidas} pág. &nbsp;|&nbsp; "
+                f"📚 **Restantes:** {paginas_restantes} pág."
+            )
+            st.markdown(
+                f"**📊 Sesiones:** {total_sesiones} &nbsp;|&nbsp; "
+                f"⏱ **Promedio/pág:** {promedio_min_por_pagina:.2f} min"
             )
 
-            # Mostrar tabla
+            # --- Tabla sin columna de Total Páginas ---
             st.dataframe(data, use_container_width=True)
         else:
             st.info("No hay registros para este libro.")
