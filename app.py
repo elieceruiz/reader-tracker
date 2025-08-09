@@ -42,12 +42,22 @@ if evento:
     st.info(f"Iniciado a las {hora_inicio.strftime('%H:%M:%S')}")
 
     cronometro = st.empty()
-    pagina_fin = st.number_input("Página en la que terminas", min_value=pagina_inicio, max_value=total_paginas, step=1)
+    pagina_fin = st.number_input(
+        "Página en la que terminas", 
+        min_value=pagina_inicio, 
+        max_value=total_paginas, 
+        step=1
+    )
     stop_button = st.button("⏹️ Finalizar lectura")
 
     for i in range(segundos_transcurridos, segundos_transcurridos + 100000):
         if stop_button:
             ahora = datetime.now(tz)
+
+            # Validación extra (por seguridad)
+            if pagina_fin > total_paginas:
+                st.error("⚠️ La página ingresada no puede ser mayor al total de páginas.")
+                break
 
             # Detectar si se terminó el libro
             libro_doc = coleccion.find_one({"_id": evento["_id"]})
@@ -84,7 +94,9 @@ if evento:
                     "total_paginas": total_paginas,
                     "pagina_inicio": 1,
                     "inicio": ahora,
-                    "en_curso": True
+                    "en_curso": True,
+                    "veces_leido": veces_leido_actual + 1,
+                    "ultima_fecha_leido": ahora
                 })
                 st.success(f"🎉 Has terminado **{libro}**. ¡Inicias nuevamente desde la página 1!")
             else:
@@ -104,7 +116,7 @@ else:
 
     if opcion not in ["Selecciona...", "Nuevo libro"]:
         ultima_pag = obtener_ultima_pagina(opcion)
-        if st.button("🟢 Continuar lectura"):
+        if st.button(f"🟢 Continuar lectura — {opcion}"):
             total_paginas = coleccion.find_one({"libro": opcion})["total_paginas"]
             coleccion.insert_one({
                 "libro": opcion,
@@ -164,9 +176,8 @@ if libros_historial:
             ultima_fecha = libro_info.get("ultima_fecha_leido")
             ultima_txt = ultima_fecha.astimezone(tz).strftime('%Y-%m-%d %H:%M:%S') if ultima_fecha else "N/A"
 
-            st.markdown(
-                f"📖 **Veces leído:** {veces_leido} &nbsp;|&nbsp; 🗓 **Última vez:** {ultima_txt}"
-            )
+            st.markdown(f"### 📊 Resumen de *{libro_filtro}*")
+            st.markdown(f"📖 **Veces leído:** {veces_leido} &nbsp;|&nbsp; 🗓 **Última vez:** {ultima_txt}")
 
             total_sesiones = len(historial)
             total_paginas = historial[0]["total_paginas"]
@@ -206,18 +217,10 @@ if libros_historial:
             promedio_min_por_pagina = promedio_seg_por_pagina / 60
 
             # --- Resumen limpio ---
-            st.markdown(f"### 📜 Historial de *{libro_filtro}*")
-            st.markdown(
-                f"**📄 Total:** {total_paginas} pág. &nbsp;|&nbsp; "
-                f"✅ **Leídas:** {paginas_leidas} pág. &nbsp;|&nbsp; "
-                f"📚 **Restantes:** {paginas_restantes} pág."
-            )
-            st.markdown(
-                f"**📊 Sesiones:** {total_sesiones} &nbsp;|&nbsp; "
-                f"⏱ **Promedio/pág:** {promedio_min_por_pagina:.2f} min"
-            )
+            st.markdown(f"**📄 Total:** {total_paginas} pág. &nbsp;|&nbsp; ✅ **Leídas:** {paginas_leidas} pág. &nbsp;|&nbsp; 📚 **Restantes:** {paginas_restantes} pág.")
+            st.markdown(f"**📊 Sesiones:** {total_sesiones} &nbsp;|&nbsp; ⏱ **Promedio/pág:** {promedio_min_por_pagina:.2f} min")
 
-            # --- Tabla sin columna de Total Páginas ---
+            # --- Tabla ---
             st.dataframe(data, use_container_width=True)
         else:
             st.info("No hay registros para este libro.")
