@@ -74,7 +74,7 @@ else:
 
     if opcion not in ["Selecciona...", "Nuevo libro"]:
         ultima_pag = obtener_ultima_pagina(opcion)
-        if st.button(f"🟢 Continuar lectura de '{opcion}'"):
+        if st.button("🟢 Continuar lectura"):
             total_paginas = coleccion.find_one({"libro": opcion})["total_paginas"]
             coleccion.insert_one({
                 "libro": opcion,
