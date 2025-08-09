@@ -48,6 +48,13 @@ if evento:
     for i in range(segundos_transcurridos, segundos_transcurridos + 100000):
         if stop_button:
             ahora = datetime.now(tz)
+
+            # Detectar si se terminó el libro
+            libro_doc = coleccion.find_one({"_id": evento["_id"]})
+            veces_leido_actual = libro_doc.get("veces_leido", 0)
+            termino_libro = (pagina_fin >= total_paginas)
+
+            # Actualizar sesión actual
             coleccion.update_one(
                 {"_id": evento["_id"]},
                 {
@@ -59,7 +66,30 @@ if evento:
                     }
                 }
             )
-            st.success("✅ Lectura finalizada.")
+
+            # Si se terminó el libro
+            if termino_libro:
+                # Incrementar veces leído y actualizar fecha
+                coleccion.update_many(
+                    {"libro": libro, "en_curso": False},
+                    {
+                        "$set": {"ultima_fecha_leido": ahora},
+                        "$inc": {"veces_leido": 1}
+                    }
+                )
+
+                # Iniciar nueva lectura desde página 1 automáticamente
+                coleccion.insert_one({
+                    "libro": libro,
+                    "total_paginas": total_paginas,
+                    "pagina_inicio": 1,
+                    "inicio": ahora,
+                    "en_curso": True
+                })
+                st.success(f"🎉 Has terminado **{libro}**. ¡Inicias nuevamente desde la página 1!")
+            else:
+                st.success("✅ Lectura finalizada.")
+
             time.sleep(1)
             st.rerun()
 
@@ -106,7 +136,8 @@ else:
                         "total_paginas": total_paginas,
                         "pagina_inicio": pagina_inicio,
                         "inicio": datetime.now(tz),
-                        "en_curso": True
+                        "en_curso": True,
+                        "veces_leido": 0
                     })
                     st.success(f"Lectura de **{libro}** iniciada.")
                     time.sleep(1)
@@ -127,6 +158,16 @@ if libros_historial:
         historial = list(coleccion.find(filtro_query).sort("inicio", -1))
 
         if historial:
+            # Mostrar veces leído y última fecha
+            libro_info = coleccion.find_one({"libro": libro_filtro, "en_curso": False})
+            veces_leido = libro_info.get("veces_leido", 0)
+            ultima_fecha = libro_info.get("ultima_fecha_leido")
+            ultima_txt = ultima_fecha.astimezone(tz).strftime('%Y-%m-%d %H:%M:%S') if ultima_fecha else "N/A"
+
+            st.markdown(
+                f"📖 **Veces leído:** {veces_leido} &nbsp;|&nbsp; 🗓 **Última vez:** {ultima_txt}"
+            )
+
             total_sesiones = len(historial)
             total_paginas = historial[0]["total_paginas"]
             paginas_leidas = 0
