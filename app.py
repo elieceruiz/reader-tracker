@@ -216,7 +216,6 @@ if mensaje_js and isinstance(mensaje_js, dict) and "type" in mensaje_js and mens
     st.rerun()
 
 # --- Módulos de la App ---
-
 seccion = st.selectbox(
     "Selecciona una sección:",
     [
@@ -227,7 +226,7 @@ seccion = st.selectbox(
     ]
 )
 
-# MÓDULO 1: Tiempo de desarrollo
+# --- MÓDULO 1: Tiempo de desarrollo ---
 if seccion == "Tiempo de desarrollo":
     st.header("Tiempo dedicado al desarrollo")
 
@@ -235,18 +234,22 @@ if seccion == "Tiempo de desarrollo":
 
     if sesion_activa:
         start_time = to_datetime_local(sesion_activa["inicio"])
-        segundos_transcurridos = int((datetime.now(tz) - start_time).total_seconds())
-        duracion = str(timedelta(seconds=segundos_transcurridos))
+        if sesion_activa.get("fin"):
+            duracion = str(timedelta(seconds=sesion_activa["duracion_segundos"]))
+        else:
+            segundos_transcurridos = int((datetime.now(tz) - start_time).total_seconds())
+            duracion = str(timedelta(seconds=segundos_transcurridos))
 
         st.success(f"🧠 Desarrollo en curso desde las {start_time.strftime('%H:%M:%S')}")
         st.markdown(f"### ⏱️ Duración: {duracion}")
 
         if st.button("⏹️ Finalizar desarrollo"):
+            segundos_transcurridos = int((datetime.now(tz) - start_time).total_seconds())
             dev_col.update_one(
                 {"_id": sesion_activa["_id"]},
                 {"$set": {"fin": datetime.now(tz), "duracion_segundos": segundos_transcurridos}}
             )
-            st.success(f"✅ Desarrollo finalizado. Duración: {duracion}")
+            st.session_state["dev_finalizado_msg"] = f"✅ Desarrollo finalizado. Duración: {str(timedelta(seconds=segundos_transcurridos))}"
             st.rerun()
 
     else:
@@ -258,14 +261,53 @@ if seccion == "Tiempo de desarrollo":
             })
             st.rerun()
 
-# MÓDULO 2: Lectura con Cronómetro
+    if "dev_finalizado_msg" in st.session_state:
+        st.success(st.session_state.pop("dev_finalizado_msg"))
+
+# --- MÓDULO 2: Lectura con Cronómetro ---
 elif seccion == "Lectura con Cronómetro":
     st.header("Lectura con Cronómetro")
 
-    if not st.session_state["lectura_en_curso"]:
-        # Checkbox primero
-        ya_guardado = st.checkbox("¿Ya tienes este libro guardado en el sistema?", key="checkbox_guardado")
+    if st.session_state["lectura_en_curso"]:
+        if st.session_state.get("lectura_id"):
+            col = coleccion_por_titulo(st.session_state["lectura_titulo"])
+            lectura_actual = col.find_one({"_id": st.session_state["lectura_id"]})
+        else:
+            lectura_actual = None
 
+        if lectura_actual and lectura_actual.get("fin"):
+            duracion = str(timedelta(seconds=lectura_actual["duracion_segundos"]))
+        else:
+            segundos_transcurridos = int((datetime.now(tz) - st.session_state["lectura_inicio"]).total_seconds())
+            duracion = str(timedelta(seconds=segundos_transcurridos))
+
+        st.success(f"📖 Lectura en curso: {st.session_state['lectura_titulo']}")
+        st.markdown(f"### ⏱️ Duración: {duracion}")
+        st.markdown(f"Página actual: {st.session_state['lectura_pagina_actual']} de {st.session_state['lectura_paginas']}")
+
+        if st.button("⏹️ Finalizar lectura"):
+            segundos_transcurridos = int((datetime.now(tz) - st.session_state["lectura_inicio"]).total_seconds())
+            if st.session_state.get("lectura_id"):
+                actualizar_lectura(
+                    st.session_state["lectura_pagina_actual"],
+                    st.session_state["ruta_actual"],
+                    st.session_state["ruta_distancia_km"]
+                )
+                col = coleccion_por_titulo(st.session_state["lectura_titulo"])
+                col.update_one(
+                    {"_id": st.session_state["lectura_id"]},
+                    {"$set": {
+                        "fin": datetime.now(tz),
+                        "duracion_segundos": segundos_transcurridos
+                    }}
+                )
+
+            st.session_state["lectura_en_curso"] = False
+            st.session_state["lectura_finalizada_msg"] = f"✅ Lectura finalizada. Duración: {str(timedelta(seconds=segundos_transcurridos))}"
+            st.rerun()
+
+    else:
+        ya_guardado = st.checkbox("¿Ya tienes este libro guardado en el sistema?", key="checkbox_guardado")
         titulo = st.text_input(
             "Ingresa el título del texto:",
             value=st.session_state.get("lectura_titulo", ""),
@@ -274,7 +316,6 @@ elif seccion == "Lectura con Cronómetro":
 
         if titulo:
             col = coleccion_por_titulo(titulo)
-
             pagina_seleccionada = None
             lectura_seleccionada_id = None
 
@@ -286,7 +327,6 @@ elif seccion == "Lectura con Cronómetro":
                         f"Pág. {l.get('pagina_final', '?')} - Inició: {to_datetime_local(l['inicio']).strftime('%Y-%m-%d')}"
                         for l in lecturas_guardadas
                     ]
-
                     seleccion = st.selectbox("Selecciona la lectura donde la dejaste:", opciones, key="select_lecturas")
                     index = opciones.index(seleccion)
                     lectura_seleccionada = lecturas_guardadas[index]
@@ -334,7 +374,10 @@ elif seccion == "Lectura con Cronómetro":
                     iniciar_lectura(st.session_state["lectura_titulo"], st.session_state["lectura_paginas"])
                 st.rerun()
 
-# MÓDULO 3: Mapa en vivo
+    if "lectura_finalizada_msg" in st.session_state:
+        st.success(st.session_state.pop("lectura_finalizada_msg"))
+
+# --- MÓDULO 3: Mapa en vivo ---
 elif seccion == "Mapa en vivo":
     st.header("Mapa para registrar ruta en tiempo real")
     render_map_con_dibujo(google_maps_api_key)
@@ -342,7 +385,7 @@ elif seccion == "Mapa en vivo":
         st.markdown(f"Ruta guardada con {len(st.session_state['ruta_actual'])} puntos.")
         st.markdown(f"Distancia total: {st.session_state['ruta_distancia_km']:.2f} km")
 
-# MÓDULO 4: Historial de lecturas
+# --- MÓDULO 4: Historial de lecturas ---
 elif seccion == "Historial de lecturas":
     st.header("Historial de lecturas por título")
     titulo_hist = st.text_input("Ingresa el título para consultar historial:", key="historial_titulo")
