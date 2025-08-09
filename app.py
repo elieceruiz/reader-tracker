@@ -27,6 +27,24 @@ def obtener_ultima_pagina(libro):
         return ultimo.get("pagina_fin", ultimo["pagina_inicio"])
     return 1
 
+def tiempo_formateado(delta_segundos):
+    """Convierte segundos en formato amigable."""
+    minutos = delta_segundos // 60
+    if minutos < 60:
+        return f"{minutos} min"
+    horas = minutos // 60
+    minutos_rest = minutos % 60
+    if horas < 24:
+        return f"{horas}h {minutos_rest}m"
+    dias = horas // 24
+    if dias < 30:
+        return f"{dias} días"
+    meses = dias // 30
+    if meses < 12:
+        return f"{meses} meses"
+    años = meses // 12
+    return f"{años} años"
+
 # === VERIFICAR SI HAY LECTURA ACTIVA ===
 evento = coleccion.find_one({"en_curso": True})
 
@@ -159,21 +177,38 @@ if libros_historial:
                 }
                 data.append(fila)
 
-            # Cálculos extra
-            paginas_restantes = max(total_paginas - paginas_leidas, 0)
-            promedio_seg_por_pagina = total_segundos / paginas_leidas if paginas_leidas > 0 else 0
-            promedio_min_por_pagina = promedio_seg_por_pagina / 60
+            # === NUEVO: Resumen solo si el libro fue leído completo ===
+            veces_leido = coleccion.count_documents({
+                "libro": libro_filtro,
+                "en_curso": False,
+                "pagina_fin": total_paginas
+            })
+            if veces_leido > 0:
+                ultima_lectura = coleccion.find_one(
+                    {"libro": libro_filtro, "pagina_fin": total_paginas},
+                    sort=[("fin", -1)]
+                )
+                fecha_fin = ultima_lectura["fin"].astimezone(tz)
+                hace_tiempo = tiempo_formateado(int((datetime.now(tz) - fecha_fin).total_seconds()))
+
+                st.markdown(f"### 🏆 Resumen de lecturas completas")
+                st.info(
+                    f"📅 **Última vez terminado:** {fecha_fin.strftime('%Y-%m-%d %H:%M:%S')} "
+                    f"(*hace {hace_tiempo}*)\n\n"
+                    f"📖 **Veces leído:** {veces_leido}\n\n"
+                    f"⏱ **Tiempo total leyendo:** {tiempo_formateado(total_segundos)}"
+                )
 
             # --- Resumen limpio ---
             st.markdown(f"### 📜 Historial de *{libro_filtro}*")
             st.markdown(
                 f"**📄 Total:** {total_paginas} pág. &nbsp;|&nbsp; "
                 f"✅ **Leídas:** {paginas_leidas} pág. &nbsp;|&nbsp; "
-                f"📚 **Restantes:** {paginas_restantes} pág."
+                f"📚 **Restantes:** {max(total_paginas - paginas_leidas, 0)} pág."
             )
             st.markdown(
                 f"**📊 Sesiones:** {total_sesiones} &nbsp;|&nbsp; "
-                f"⏱ **Promedio/pág:** {promedio_min_por_pagina:.2f} min"
+                f"⏱ **Promedio/pág:** {(total_segundos / paginas_leidas / 60 if paginas_leidas > 0 else 0):.2f} min"
             )
 
             # --- Tabla sin columna de Total Páginas ---
