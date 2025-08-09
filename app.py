@@ -92,18 +92,45 @@ else:
 
     if opcion not in ["Selecciona...", "Nuevo libro"]:
         ultima_pag = obtener_ultima_pagina(opcion)
-        if st.button("🟢 Continuar lectura"):
-            total_paginas = coleccion.find_one({"libro": opcion})["total_paginas"]
-            coleccion.insert_one({
-                "libro": opcion,
-                "total_paginas": total_paginas,
-                "pagina_inicio": ultima_pag + 1,
-                "inicio": datetime.now(tz),
-                "en_curso": True
-            })
-            st.success(f"Lectura de **{opcion}** reanudada desde la página {ultima_pag + 1}.")
-            time.sleep(1)
-            st.rerun()
+        total_paginas = coleccion.find_one({"libro": opcion})["total_paginas"]
+
+        # --- Ajuste: si ya estaba en la última página ---
+        if ultima_pag >= total_paginas:
+            st.warning("⚠️ Ya habías terminado este libro.")
+            modo = st.radio(
+                "¿Qué quieres hacer?",
+                ("Empezar desde página 1", "Elegir página manualmente")
+            )
+
+            if modo == "Elegir página manualmente":
+                nueva_pagina = st.number_input("Página desde donde empiezas", min_value=1, max_value=total_paginas, step=1)
+            else:
+                nueva_pagina = 1
+
+            if st.button("🟢 Iniciar lectura nuevamente"):
+                coleccion.insert_one({
+                    "libro": opcion,
+                    "total_paginas": total_paginas,
+                    "pagina_inicio": nueva_pagina,
+                    "inicio": datetime.now(tz),
+                    "en_curso": True
+                })
+                st.success(f"Lectura de **{opcion}** iniciada desde la página {nueva_pagina}.")
+                time.sleep(1)
+                st.rerun()
+
+        else:
+            if st.button("🟢 Continuar lectura"):
+                coleccion.insert_one({
+                    "libro": opcion,
+                    "total_paginas": total_paginas,
+                    "pagina_inicio": ultima_pag + 1,
+                    "inicio": datetime.now(tz),
+                    "en_curso": True
+                })
+                st.success(f"Lectura de **{opcion}** reanudada desde la página {ultima_pag + 1}.")
+                time.sleep(1)
+                st.rerun()
 
     elif opcion == "Nuevo libro":
         # NUEVO LIBRO
