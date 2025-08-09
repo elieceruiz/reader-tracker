@@ -94,6 +94,7 @@ else:
         ultima_pag = obtener_ultima_pagina(opcion)
         total_paginas = coleccion.find_one({"libro": opcion})["total_paginas"]
 
+        # --- Ajuste: si ya estaba en la última página ---
         if ultima_pag >= total_paginas:
             st.warning("⚠️ Ya habías terminado este libro.")
             modo = st.radio(
@@ -132,6 +133,7 @@ else:
                 st.rerun()
 
     elif opcion == "Nuevo libro":
+        # NUEVO LIBRO
         with st.form("nueva_lectura"):
             libro = st.text_input("📚 Nombre del libro")
             total_paginas = st.number_input("Número total de páginas", min_value=1, step=1)
@@ -158,15 +160,15 @@ else:
 # === HISTORIAL DE LECTURAS ===
 st.subheader("📜 Historial de Lecturas")
 
-libros_historial = sorted({e["libro"] for e in coleccion.find()})
+# Lista de libros con historial, ordenados alfabéticamente
+libros_historial = sorted({e["libro"] for e in coleccion.find({"en_curso": False})})
 
 if libros_historial:
     opciones = ["Selecciona un libro..."] + libros_historial
     libro_filtro = st.selectbox("Libro:", opciones, index=0)
 
     if libro_filtro != "Selecciona un libro...":
-        # Incluye tanto finalizadas como en curso
-        filtro_query = {"libro": libro_filtro}
+        filtro_query = {"en_curso": False, "libro": libro_filtro}
         historial = list(coleccion.find(filtro_query).sort("inicio", -1))
 
         if historial:
@@ -178,23 +180,13 @@ if libros_historial:
             data = []
             for e in historial:
                 inicio = e["inicio"].astimezone(tz).strftime('%Y-%m-%d %H:%M:%S')
+                fin = e["fin"].astimezone(tz).strftime('%Y-%m-%d %H:%M:%S')
+                duracion_seg = int((e["fin"] - e["inicio"]).total_seconds())
 
-                if e.get("fin"):
-                    fin = e["fin"].astimezone(tz).strftime('%Y-%m-%d %H:%M:%S')
-                    duracion_seg = int((e["fin"] - e["inicio"]).total_seconds())
-                    pag_fin = e.get("pagina_fin", e["pagina_inicio"])
-                else:
-                    # Sesión en curso
-                    fin = "(en curso)"
-                    duracion_seg = int((datetime.now(tz) - e["inicio"]).total_seconds())
-                    pag_fin = e.get("pagina_fin", e["pagina_inicio"])  # podría ir actualizando
-
-                # Cálculo de páginas leídas
+                # Páginas leídas
                 pag_inicio = e["pagina_inicio"]
+                pag_fin = e.get("pagina_fin", pag_inicio)
                 leidas_sesion = max(pag_fin - pag_inicio + 1, 0)
-
-                if paginas_leidas + leidas_sesion > total_paginas:
-                    leidas_sesion = max(total_paginas - paginas_leidas, 0)
 
                 paginas_leidas += leidas_sesion
                 total_segundos += duracion_seg
@@ -212,7 +204,29 @@ if libros_historial:
                 }
                 data.append(fila)
 
-            # Resumen limpio
+            # === NUEVO: Resumen solo si el libro fue leído completo ===
+            veces_leido = coleccion.count_documents({
+                "libro": libro_filtro,
+                "en_curso": False,
+                "pagina_fin": total_paginas
+            })
+            if veces_leido > 0:
+                ultima_lectura = coleccion.find_one(
+                    {"libro": libro_filtro, "pagina_fin": total_paginas},
+                    sort=[("fin", -1)]
+                )
+                fecha_fin = ultima_lectura["fin"].astimezone(tz)
+                hace_tiempo = tiempo_formateado(int((datetime.now(tz) - fecha_fin).total_seconds()))
+
+                st.markdown(f"### 🏆 Resumen de lecturas completas")
+                st.info(
+                    f"📅 **Última vez terminado:** {fecha_fin.strftime('%Y-%m-%d %H:%M:%S')} "
+                    f"(*hace {hace_tiempo}*)\n\n"
+                    f"📖 **Veces leído:** {veces_leido}\n\n"
+                    f"⏱ **Tiempo total leyendo:** {tiempo_formateado(total_segundos)}"
+                )
+
+            # --- Resumen limpio ---
             st.markdown(f"### 📜 Historial de *{libro_filtro}*")
             st.markdown(
                 f"**📄 Total:** {total_paginas} pág. &nbsp;|&nbsp; "
@@ -224,10 +238,11 @@ if libros_historial:
                 f"⏱ **Promedio/pág:** {(total_segundos / paginas_leidas / 60 if paginas_leidas > 0 else 0):.2f} min"
             )
 
+            # --- Tabla sin columna de Total Páginas ---
             st.dataframe(data, use_container_width=True)
         else:
             st.info("No hay registros para este libro.")
     else:
         st.info("Selecciona un libro para ver el historial.")
 else:
-    st.info("No hay lecturas registradas.")
+    st.info("No hay lecturas finalizadas.")
