@@ -70,9 +70,13 @@ if evento:
 else:
     # === SELECCIÓN DE LIBRO O NUEVO ===
     libros_guardados = sorted({e["libro"] for e in coleccion.find()})
-    opcion = st.selectbox("📚 Selecciona un libro o elige 'Nuevo libro':", ["Nuevo libro"] + libros_guardados)
+    opciones_libro = ["¿Existente o Nuevo?"] + libros_guardados + ["Nuevo libro"]
+    opcion = st.selectbox("📚 Selecciona un libro:", opciones_libro, index=0)
 
-    if opcion != "Nuevo libro":
+    if opcion == "¿Existente o Nuevo?":
+        st.stop()
+
+    elif opcion in libros_guardados:
         ultima_pag = obtener_ultima_pagina(opcion)
         if st.button(f"🟢 Continuar lectura de '{opcion}'"):
             total_paginas = coleccion.find_one({"libro": opcion})["total_paginas"]
@@ -86,8 +90,8 @@ else:
             st.success(f"Lectura de **{opcion}** reanudada desde la página {ultima_pag + 1}.")
             time.sleep(1)
             st.rerun()
-    else:
-        # NUEVO LIBRO
+
+    elif opcion == "Nuevo libro":
         with st.form("nueva_lectura"):
             libro = st.text_input("📚 Nombre del libro")
             total_paginas = st.number_input("Número total de páginas", min_value=1, step=1)
@@ -139,7 +143,6 @@ if libros_historial:
                 fin = e["fin"].astimezone(tz).strftime('%Y-%m-%d %H:%M:%S')
                 duracion_seg = int((e["fin"] - e["inicio"]).total_seconds())
 
-                # Páginas leídas (inclusive)
                 pag_inicio = e["pagina_inicio"]
                 pag_fin = e.get("pagina_fin", pag_inicio)
                 leidas_sesion = max(pag_fin - pag_inicio + 1, 0)
@@ -156,17 +159,14 @@ if libros_historial:
                     "Fin": fin,
                     "Duración": duracion,
                     "Pág. Inicio": pag_inicio,
-                    "Pág. Fin": pag_fin,
-                    "Total Páginas": total_paginas
+                    "Pág. Fin": pag_fin
                 }
                 data.append(fila)
 
-            # Cálculos extra
             paginas_restantes = max(total_paginas - paginas_leidas, 0)
             promedio_seg_por_pagina = total_segundos / paginas_leidas if paginas_leidas > 0 else 0
             promedio_min_por_pagina = promedio_seg_por_pagina / 60
 
-            # Mostrar resumen
             st.markdown(
                 f"**📚 Sesiones:** {total_sesiones} &nbsp;&nbsp;|&nbsp;&nbsp; "
                 f"**✅ Leídas:** {paginas_leidas} pág. &nbsp;&nbsp;|&nbsp;&nbsp; "
@@ -174,7 +174,6 @@ if libros_historial:
                 f"**⏱ Promedio/pág:** {promedio_min_por_pagina:.2f} min"
             )
 
-            # Mostrar tabla
             st.dataframe(data, use_container_width=True)
         else:
             st.info("No hay registros para este libro.")
