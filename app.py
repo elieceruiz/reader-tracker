@@ -263,15 +263,14 @@ elif seccion == "Lectura con Cronómetro":
     st.header("Lectura con Cronómetro")
 
     if not st.session_state["lectura_en_curso"]:
-        titulo = st.text_input("Ingresa el título del texto:", value=st.session_state["lectura_titulo"] or "")
+        titulo = st.text_input("Ingresa el título del texto:", key="lectura_titulo")
+
         if titulo:
-            st.session_state["lectura_titulo"] = titulo
             col = coleccion_por_titulo(titulo)
             ultima_lectura = col.find_one(sort=[("inicio", -1)])
-            paginas_totales = None
-            if ultima_lectura and ultima_lectura.get("paginas_totales"):
-                paginas_totales = ultima_lectura["paginas_totales"]
-            if paginas_totales:
+            paginas_totales = ultima_lectura.get("paginas_totales") if ultima_lectura else None
+
+            if paginas_totales is not None:
                 st.session_state["lectura_paginas"] = paginas_totales
                 st.write(f"Páginas totales: {paginas_totales}")
             else:
@@ -288,25 +287,27 @@ elif seccion == "Lectura con Cronómetro":
             pagina_inicial = st.number_input(
                 "Página desde donde empiezas la lectura:",
                 min_value=1,
-                max_value=st.session_state["lectura_paginas"] or 1,
-                value=st.session_state["lectura_pagina_actual"] if st.session_state["lectura_pagina_actual"] else 1,
+                max_value=st.session_state["lectura_paginas"],
+                value=st.session_state.get("lectura_pagina_actual", 1),
                 step=1,
                 key="pagina_inicio"
             )
             st.session_state["lectura_pagina_actual"] = pagina_inicial
 
-            if st.session_state["lectura_paginas"] and st.session_state["lectura_pagina_actual"]:
-                if st.button("▶️ Iniciar lectura"):
-                    st.session_state["lectura_inicio"] = datetime.now(tz)
-                    st.session_state["lectura_en_curso"] = True
-                    st.session_state["cronometro_running"] = True
-                    st.session_state["cronometro_segundos"] = 0
-                    iniciar_lectura(st.session_state["lectura_titulo"], st.session_state["lectura_paginas"])
-                    st.rerun()
+            if st.button("▶️ Iniciar lectura"):
+                st.session_state["lectura_inicio"] = datetime.now(tz)
+                st.session_state["lectura_en_curso"] = True
+                st.session_state["cronometro_running"] = True
+                st.session_state["cronometro_segundos"] = 0
+                iniciar_lectura(
+                    st.session_state["lectura_titulo"],
+                    st.session_state["lectura_paginas"]
+                )
+                st.rerun()
     else:
         st.markdown("### Lectura en curso...")
+        st.markdown(f"⏰ Tiempo transcurrido: {timedelta(seconds=st.session_state['cronometro_segundos'])}")
         if st.session_state["cronometro_running"]:
-            st.markdown(f"⏰ Tiempo transcurrido: {timedelta(seconds=st.session_state['cronometro_segundos'])}")
             st.session_state["cronometro_segundos"] += 1
             st.experimental_rerun = None
             st.rerun()
