@@ -1,6 +1,4 @@
 streamlit
 pymongo
 pytz
-python-dateutil
-streamlit-autorefresh
-streamlit-js-eval
+folium
