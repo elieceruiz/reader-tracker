@@ -139,10 +139,10 @@ if libros_historial:
                 fin = e["fin"].astimezone(tz).strftime('%Y-%m-%d %H:%M:%S')
                 duracion_seg = int((e["fin"] - e["inicio"]).total_seconds())
 
-                # Páginas leídas en esta sesión
+                # Páginas leídas (inclusive)
                 pag_inicio = e["pagina_inicio"]
                 pag_fin = e.get("pagina_fin", pag_inicio)
-                leidas_sesion = max(pag_fin - pag_inicio, 0)
+                leidas_sesion = max(pag_fin - pag_inicio + 1, 0)
 
                 paginas_leidas += leidas_sesion
                 total_segundos += duracion_seg
