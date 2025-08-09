@@ -125,16 +125,29 @@ if libros_historial:
         filtro_query = {"en_curso": False, "libro": libro_filtro}
         historial = list(coleccion.find(filtro_query).sort("inicio", -1))
 
-        # Título dinámico
         st.markdown(f"### 📜 Historial de **{libro_filtro}**")
 
         if historial:
+            total_sesiones = len(historial)
+            total_paginas = historial[0]["total_paginas"]  # mismo para todas las sesiones
+            paginas_leidas = 0
+            total_segundos = 0
+
             data = []
             for e in historial:
                 inicio = e["inicio"].astimezone(tz).strftime('%Y-%m-%d %H:%M:%S')
                 fin = e["fin"].astimezone(tz).strftime('%Y-%m-%d %H:%M:%S')
-                total_segundos = int((e["fin"] - e["inicio"]).total_seconds())
-                horas, resto = divmod(total_segundos, 3600)
+                duracion_seg = int((e["fin"] - e["inicio"]).total_seconds())
+
+                # Páginas leídas en esta sesión
+                pag_inicio = e["pagina_inicio"]
+                pag_fin = e.get("pagina_fin", pag_inicio)
+                leidas_sesion = max(pag_fin - pag_inicio, 0)
+
+                paginas_leidas += leidas_sesion
+                total_segundos += duracion_seg
+
+                horas, resto = divmod(duracion_seg, 3600)
                 minutos, segundos = divmod(resto, 60)
                 duracion = f"{horas:02d}h {minutos:02d}m {segundos:02d}s"
 
@@ -142,12 +155,26 @@ if libros_historial:
                     "Inicio": inicio,
                     "Fin": fin,
                     "Duración": duracion,
-                    "Pág. Inicio": e["pagina_inicio"],
-                    "Pág. Fin": e.get("pagina_fin", ""),
-                    "Total Páginas": e["total_paginas"]
+                    "Pág. Inicio": pag_inicio,
+                    "Pág. Fin": pag_fin,
+                    "Total Páginas": total_paginas
                 }
                 data.append(fila)
 
+            # Cálculos extra
+            paginas_restantes = max(total_paginas - paginas_leidas, 0)
+            promedio_seg_por_pagina = total_segundos / paginas_leidas if paginas_leidas > 0 else 0
+            promedio_min_por_pagina = promedio_seg_por_pagina / 60
+
+            # Mostrar resumen
+            st.markdown(
+                f"**📚 Sesiones:** {total_sesiones} &nbsp;&nbsp;|&nbsp;&nbsp; "
+                f"**✅ Leídas:** {paginas_leidas} pág. &nbsp;&nbsp;|&nbsp;&nbsp; "
+                f"**📖 Restantes:** {paginas_restantes} pág. &nbsp;&nbsp;|&nbsp;&nbsp; "
+                f"**⏱ Promedio/pág:** {promedio_min_por_pagina:.2f} min"
+            )
+
+            # Mostrar tabla
             st.dataframe(data, use_container_width=True)
         else:
             st.info("No hay registros para este libro.")
