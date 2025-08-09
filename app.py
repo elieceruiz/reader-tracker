@@ -114,50 +114,44 @@ else:
 # === HISTORIAL DE LECTURAS ===
 st.subheader("📜 Historial de Lecturas")
 
-# Lista de libros para filtrar
+# Lista de libros con historial, ordenados alfabéticamente
 libros_historial = sorted({e["libro"] for e in coleccion.find({"en_curso": False})})
+
 if libros_historial:
-    libro_filtro = st.selectbox("Filtrar por libro:", ["Todos"] + libros_historial)
+    opciones = ["Selecciona un libro..."] + libros_historial
+    libro_filtro = st.selectbox("Libro:", opciones, index=0)
 
-    filtro_query = {"en_curso": False}
-    if libro_filtro != "Todos":
-        filtro_query["libro"] = libro_filtro
+    if libro_filtro != "Selecciona un libro...":
+        filtro_query = {"en_curso": False, "libro": libro_filtro}
+        historial = list(coleccion.find(filtro_query).sort("inicio", -1))
 
-    historial = list(coleccion.find(filtro_query).sort("inicio", -1))
-
-    # Título dinámico
-    if libro_filtro == "Todos":
-        st.markdown("### 📜 Historial de todas las lecturas")
-    else:
+        # Título dinámico
         st.markdown(f"### 📜 Historial de **{libro_filtro}**")
 
-    if historial:
-        data = []
-        for e in historial:
-            inicio = e["inicio"].astimezone(tz).strftime('%Y-%m-%d %H:%M:%S')
-            fin = e["fin"].astimezone(tz).strftime('%Y-%m-%d %H:%M:%S')
-            total_segundos = int((e["fin"] - e["inicio"]).total_seconds())
-            horas, resto = divmod(total_segundos, 3600)
-            minutos, segundos = divmod(resto, 60)
-            duracion = f"{horas:02d}h {minutos:02d}m {segundos:02d}s"
+        if historial:
+            data = []
+            for e in historial:
+                inicio = e["inicio"].astimezone(tz).strftime('%Y-%m-%d %H:%M:%S')
+                fin = e["fin"].astimezone(tz).strftime('%Y-%m-%d %H:%M:%S')
+                total_segundos = int((e["fin"] - e["inicio"]).total_seconds())
+                horas, resto = divmod(total_segundos, 3600)
+                minutos, segundos = divmod(resto, 60)
+                duracion = f"{horas:02d}h {minutos:02d}m {segundos:02d}s"
 
-            fila = {
-                "Inicio": inicio,
-                "Fin": fin,
-                "Duración": duracion,
-                "Pág. Inicio": e["pagina_inicio"],
-                "Pág. Fin": e.get("pagina_fin", ""),
-                "Total Páginas": e["total_paginas"]
-            }
+                fila = {
+                    "Inicio": inicio,
+                    "Fin": fin,
+                    "Duración": duracion,
+                    "Pág. Inicio": e["pagina_inicio"],
+                    "Pág. Fin": e.get("pagina_fin", ""),
+                    "Total Páginas": e["total_paginas"]
+                }
+                data.append(fila)
 
-            # Solo mostrar columna "Libro" si el filtro es "Todos"
-            if libro_filtro == "Todos":
-                fila["Libro"] = e["libro"]
-
-            data.append(fila)
-
-        st.dataframe(data, use_container_width=True)
+            st.dataframe(data, use_container_width=True)
+        else:
+            st.info("No hay registros para este libro.")
     else:
-        st.info("No hay registros para este libro.")
+        st.info("Selecciona un libro para ver el historial.")
 else:
     st.info("No hay lecturas finalizadas.")
