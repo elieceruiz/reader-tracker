@@ -263,6 +263,9 @@ elif seccion == "Lectura con Cronómetro":
     st.header("Lectura con Cronómetro")
 
     if not st.session_state["lectura_en_curso"]:
+        # Checkbox primero
+        ya_guardado = st.checkbox("¿Ya tienes este libro guardado en el sistema?", key="checkbox_guardado")
+
         titulo = st.text_input(
             "Ingresa el título del texto:",
             value=st.session_state.get("lectura_titulo", ""),
@@ -271,9 +274,6 @@ elif seccion == "Lectura con Cronómetro":
 
         if titulo:
             col = coleccion_por_titulo(titulo)
-
-            # Checkbox para indicar si ya tienes el libro guardado
-            ya_guardado = st.checkbox("¿Ya tienes este libro guardado en el sistema?", key="checkbox_guardado")
 
             pagina_seleccionada = None
             lectura_seleccionada_id = None
@@ -332,41 +332,6 @@ elif seccion == "Lectura con Cronómetro":
                     st.session_state["lectura_id"] = lectura_seleccionada_id
                 else:
                     iniciar_lectura(st.session_state["lectura_titulo"], st.session_state["lectura_paginas"])
-                st.rerun()
-
-    else:
-        st.markdown("### Lectura en curso...")
-        if st.session_state["cronometro_running"]:
-            st.markdown(f"⏰ Tiempo transcurrido: {timedelta(seconds=st.session_state['cronometro_segundos'])}")
-            st.session_state["cronometro_segundos"] += 1
-            st.rerun()
-        else:
-            st.markdown(f"⏰ Tiempo detenido: {timedelta(seconds=st.session_state['cronometro_segundos'])}")
-
-        pagina = st.number_input(
-            "Página actual:",
-            min_value=1,
-            max_value=st.session_state["lectura_paginas"],
-            value=st.session_state["lectura_pagina_actual"] or 1,
-            step=1,
-            key="pagina_actual"
-        )
-        if pagina != st.session_state["lectura_pagina_actual"]:
-            st.session_state["lectura_pagina_actual"] = pagina
-            actualizar_lectura(pagina, st.session_state["ruta_actual"], st.session_state["ruta_distancia_km"])
-
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.session_state["cronometro_running"]:
-                if st.button("⏸️ Pausar cronómetro"):
-                    st.session_state["cronometro_running"] = False
-            else:
-                if st.button("▶️ Reanudar cronómetro"):
-                    st.session_state["cronometro_running"] = True
-        with col2:
-            if st.button("⏹️ Finalizar lectura"):
-                finalizar_lectura()
-                st.success("Lectura finalizada y guardada.")
                 st.rerun()
 
 # MÓDULO 3: Mapa en vivo
